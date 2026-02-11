@@ -7,6 +7,7 @@ will be exported here once implemented in subsequent issues.
 
 from ingestkit_excel.config import ExcelProcessorConfig
 from ingestkit_excel.errors import ErrorCode, IngestError
+from ingestkit_excel.idempotency import compute_ingest_key
 from ingestkit_excel.models import (
     ChunkMetadata,
     ChunkPayload,
@@ -42,6 +43,7 @@ __all__ = [
     "ParserUsed",
     # Idempotency
     "IngestKey",
+    "compute_ingest_key",
     # Stage artifacts
     "ParseStageResult",
     "ClassificationStageResult",
