@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ingestkit-pdf"
+version = "0.1.0"
+description = "Tiered PDF file processing for RAG pipelines"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf>=1.24",
+    "pymupdf4llm>=0.0.10",
+    "pdfplumber>=0.10",
+    "pandas>=2.0",
+    "pydantic>=2.0",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# OCR engines
+tesseract = ["pytesseract>=0.3"]       # required baseline — install on all targets
+paddleocr = ["paddleocr>=2.7"]         # optional upgrade — higher accuracy
+
+# Language detection
+langdetect = ["fast-langdetect>=0.2"]
+
+# Image preprocessing
+opencv = ["opencv-python-headless>=4.8"]
+
+# Advanced layout analysis (optional)
+docling = ["docling>=2.0"]
+
+# Vector store backends
+qdrant = ["qdrant-client>=1.7"]
+
+# Structured DB backends
+postgres = ["psycopg2-binary>=2.9"]
+
+# LLM / Embedding backends
+ollama = ["httpx>=0.27"]
+
+# Convenience bundles
+baseline = ["ingestkit-pdf[tesseract,langdetect,opencv,qdrant,ollama]"]
+full = ["ingestkit-pdf[tesseract,paddleocr,langdetect,opencv,docling,qdrant,ollama]"]
+
+# Development
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "pyyaml>=6.0",
+    "reportlab>=4.0",         # programmatic test PDF generation
+    "mypy>=1.5",
+    "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests (no external services)",
+    "integration: Integration tests (require external services)",
+    "ocr: Tests requiring Tesseract OCR engine installed (baseline)",
+    "ocr_paddle: Tests requiring PaddleOCR installed (optional upgrade)",
+]
