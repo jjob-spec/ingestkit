@@ -30,6 +30,7 @@ from ingestkit_excel.models import (
 from ingestkit_excel.inspector import ExcelInspector
 from ingestkit_excel.llm_classifier import LLMClassifier
 from ingestkit_excel.parser_chain import ParserChain
+from ingestkit_excel.processors import StructuredDBProcessor
 from ingestkit_excel.protocols import (
     EmbeddingBackend,
     LLMBackend,
@@ -66,6 +67,8 @@ __all__ = [
     "ExcelInspector",
     # LLM Classifier
     "LLMClassifier",
+    # Processors
+    "StructuredDBProcessor",
     # Errors
     "ErrorCode",
     "IngestError",
