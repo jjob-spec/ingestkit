@@ -413,17 +413,38 @@ class ParserChain:
         # Hidden status
         is_hidden = ws.sheet_state == "hidden"
 
-        # Header detection and type analysis
-        header_row_detected, header_values = self._detect_header(rows_data)
-        numeric_ratio, text_ratio, empty_ratio = self._compute_type_ratios(
-            rows_data
-        )
-        column_type_consistency = self._compute_column_type_consistency(
-            rows_data
+        # Trim to effective data bounds (removes inflated empty rows/cols)
+        trimmed, first_data_row, _first_data_col = (
+            self._trim_to_data_bounds(rows_data)
         )
 
-        # Sample rows
-        sample_rows = self._extract_sample_rows(rows_data)
+        # Header detection on trimmed data
+        header_row_detected, header_values, trimmed_header_idx = (
+            self._detect_header(trimmed)
+        )
+        # Map index back to original rows_data coordinates
+        header_row_index = (
+            (first_data_row + trimmed_header_idx)
+            if trimmed_header_idx is not None
+            else None
+        )
+
+        # Compute ratios from DATA rows only (after header) so title/blank
+        # rows don't pollute the signals that the inspector relies on.
+        data_rows = (
+            trimmed[trimmed_header_idx + 1:]
+            if trimmed_header_idx is not None
+            else trimmed
+        )
+        numeric_ratio, text_ratio, empty_ratio = self._compute_type_ratios(
+            data_rows
+        )
+        column_type_consistency = self._compute_column_type_consistency(
+            data_rows
+        )
+
+        # Sample rows (from trimmed data for relevance)
+        sample_rows = self._extract_sample_rows(trimmed)
 
         return SheetProfile(
             name=sheet_name,
@@ -432,6 +453,7 @@ class ParserChain:
             merged_cell_count=merged_cell_count,
             merged_cell_ratio=merged_cell_ratio,
             header_row_detected=header_row_detected,
+            header_row_index=header_row_index,
             header_values=header_values,
             column_type_consistency=column_type_consistency,
             numeric_ratio=numeric_ratio,
@@ -476,14 +498,29 @@ class ParserChain:
         for _, row in df.iterrows():
             rows_data.append([v if pd.notna(v) else None for v in row])
 
-        header_row_detected, header_values = self._detect_header(rows_data)
+        trimmed, first_data_row, _first_data_col = (
+            self._trim_to_data_bounds(rows_data)
+        )
+        header_row_detected, header_values, trimmed_header_idx = (
+            self._detect_header(trimmed)
+        )
+        header_row_index = (
+            (first_data_row + trimmed_header_idx)
+            if trimmed_header_idx is not None
+            else None
+        )
+        data_rows = (
+            trimmed[trimmed_header_idx + 1:]
+            if trimmed_header_idx is not None
+            else trimmed
+        )
         numeric_ratio, text_ratio, empty_ratio = self._compute_type_ratios(
-            rows_data
+            data_rows
         )
         column_type_consistency = self._compute_column_type_consistency(
-            rows_data
+            data_rows
         )
-        sample_rows = self._extract_sample_rows(rows_data)
+        sample_rows = self._extract_sample_rows(trimmed)
 
         return SheetProfile(
             name=sheet_name,
@@ -492,6 +529,7 @@ class ParserChain:
             merged_cell_count=0,
             merged_cell_ratio=0.0,
             header_row_detected=header_row_detected,
+            header_row_index=header_row_index,
             header_values=header_values,
             column_type_consistency=column_type_consistency,
             numeric_ratio=numeric_ratio,
@@ -555,14 +593,29 @@ class ParserChain:
             ):
                 rows_data.append([cell.value for cell in row])
 
-            header_row_detected, header_values = self._detect_header(rows_data)
+            trimmed, first_data_row, _first_data_col = (
+                self._trim_to_data_bounds(rows_data)
+            )
+            header_row_detected, header_values, trimmed_header_idx = (
+                self._detect_header(trimmed)
+            )
+            header_row_index = (
+                (first_data_row + trimmed_header_idx)
+                if trimmed_header_idx is not None
+                else None
+            )
+            data_rows = (
+                trimmed[trimmed_header_idx + 1:]
+                if trimmed_header_idx is not None
+                else trimmed
+            )
             numeric_ratio, text_ratio, empty_ratio = (
-                self._compute_type_ratios(rows_data)
+                self._compute_type_ratios(data_rows)
             )
             column_type_consistency = (
-                self._compute_column_type_consistency(rows_data)
+                self._compute_column_type_consistency(data_rows)
             )
-            sample_rows = self._extract_sample_rows(rows_data)
+            sample_rows = self._extract_sample_rows(trimmed)
 
             return SheetProfile(
                 name=sheet_name,
@@ -571,6 +624,7 @@ class ParserChain:
                 merged_cell_count=merged_cell_count,
                 merged_cell_ratio=merged_cell_ratio,
                 header_row_detected=header_row_detected,
+                header_row_index=header_row_index,
                 header_values=header_values,
                 column_type_consistency=column_type_consistency,
                 numeric_ratio=numeric_ratio,
@@ -630,16 +684,29 @@ class ParserChain:
                     )
                     continue
 
-                header_row_detected, header_values = self._detect_header(
-                    rows_data
+                trimmed, first_data_row, _first_data_col = (
+                    self._trim_to_data_bounds(rows_data)
+                )
+                header_row_detected, header_values, trimmed_header_idx = (
+                    self._detect_header(trimmed)
+                )
+                header_row_index = (
+                    (first_data_row + trimmed_header_idx)
+                    if trimmed_header_idx is not None
+                    else None
+                )
+                data_rows = (
+                    trimmed[trimmed_header_idx + 1:]
+                    if trimmed_header_idx is not None
+                    else trimmed
                 )
                 numeric_ratio, text_ratio, empty_ratio = (
-                    self._compute_type_ratios(rows_data)
+                    self._compute_type_ratios(data_rows)
                 )
                 column_type_consistency = (
-                    self._compute_column_type_consistency(rows_data)
+                    self._compute_column_type_consistency(data_rows)
                 )
-                sample_rows = self._extract_sample_rows(rows_data)
+                sample_rows = self._extract_sample_rows(trimmed)
 
                 errors.append(
                     IngestError(
@@ -662,6 +729,7 @@ class ParserChain:
                         merged_cell_count=0,
                         merged_cell_ratio=0.0,
                         header_row_detected=header_row_detected,
+                        header_row_index=header_row_index,
                         header_values=header_values,
                         column_type_consistency=column_type_consistency,
                         numeric_ratio=numeric_ratio,
@@ -746,26 +814,109 @@ class ParserChain:
     # Shared analysis helpers
     # ------------------------------------------------------------------
 
-    def _detect_header(
+    @staticmethod
+    def _is_empty_cell(val: object) -> bool:
+        """Return True if a cell value is logically empty."""
+        if val is None:
+            return True
+        if isinstance(val, str) and val.strip() == "":
+            return True
+        return False
+
+    def _trim_to_data_bounds(
         self, rows_data: list[list[object]]
-    ) -> tuple[bool, list[str]]:
-        """Detect whether the first row is a header row.
+    ) -> tuple[list[list[object]], int, int]:
+        """Trim rows_data to the bounding box of non-empty cells.
 
-        Heuristic: the first row where all cells are non-null and at least
-        one is a string is considered the header row.
+        Real-world Excel files often have inflated ``max_row`` /
+        ``max_column`` due to formatting, accidental edits, or empty
+        merged regions.  This trims leading and trailing empty rows and
+        columns so downstream analysis operates on actual data only.
 
-        Returns (header_detected, header_values).
+        Returns (trimmed_rows, first_data_row, first_data_col) where
+        ``first_data_row`` and ``first_data_col`` are 0-based offsets
+        into the original ``rows_data`` so callers can map indices back.
         """
         if not rows_data:
-            return False, []
+            return [], 0, 0
 
-        first_row = rows_data[0]
-        all_non_null = all(v is not None for v in first_row)
-        has_string = any(isinstance(v, str) for v in first_row)
+        raw_col_count = max(len(r) for r in rows_data)
 
-        if all_non_null and has_string:
-            return True, [str(v) for v in first_row]
-        return False, []
+        # Find bounding box of non-empty cells
+        min_row = len(rows_data)
+        max_row = -1
+        min_col = raw_col_count
+        max_col = -1
+
+        for row_idx, row in enumerate(rows_data):
+            for col_idx, val in enumerate(row):
+                if not self._is_empty_cell(val):
+                    min_row = min(min_row, row_idx)
+                    max_row = max(max_row, row_idx)
+                    min_col = min(min_col, col_idx)
+                    max_col = max(max_col, col_idx)
+
+        if max_row == -1:
+            # All empty
+            return [], 0, 0
+
+        trimmed: list[list[object]] = []
+        for row_idx in range(min_row, max_row + 1):
+            row = rows_data[row_idx]
+            trimmed.append(row[min_col : max_col + 1])
+
+        return trimmed, min_row, min_col
+
+    def _detect_header(
+        self, rows_data: list[list[object]]
+    ) -> tuple[bool, list[str], int | None]:
+        """Detect the header row by scanning past title and blank rows.
+
+        Heuristic: scan the first ``_MAX_HEADER_SCAN_ROWS`` rows and
+        return the first row where:
+
+        * At least ``_MIN_HEADER_COLS`` cells are non-empty, **and**
+        * every non-empty cell is a string, **and**
+        * the **span-based fill ratio** (non-empty count / span from
+          first to last non-empty cell) is ``>= 0.5``.
+
+        Using the row's own span instead of the total column count makes
+        this robust to inflated ``max_column`` and multi-region sheets
+        where tables sit in different parts of the grid.
+
+        Returns (header_detected, header_values, header_row_index).
+        ``header_row_index`` is 0-based into ``rows_data``, or ``None``
+        if no header was found.
+        """
+        _MAX_HEADER_SCAN_ROWS = 20
+        _MIN_HEADER_COLS = 3
+
+        if not rows_data:
+            return False, [], None
+
+        scan_limit = min(len(rows_data), _MAX_HEADER_SCAN_ROWS)
+        for idx in range(scan_limit):
+            row = rows_data[idx]
+            non_null = [v for v in row if not self._is_empty_cell(v)]
+
+            if len(non_null) < _MIN_HEADER_COLS:
+                continue
+
+            if not all(isinstance(v, str) for v in non_null):
+                continue
+
+            # Span-based fill ratio: first to last non-empty cell
+            indices = [
+                i for i, v in enumerate(row)
+                if not self._is_empty_cell(v)
+            ]
+            span = indices[-1] - indices[0] + 1
+            fill_ratio = len(non_null) / span if span > 0 else 0.0
+
+            if fill_ratio >= 0.5:
+                return True, [str(v) for v in non_null], idx
+
+        return False, [], None
 
     def _compute_type_ratios(
         self, rows_data: list[list[object]]
