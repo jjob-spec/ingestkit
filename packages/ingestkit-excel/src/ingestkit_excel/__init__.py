@@ -28,6 +28,7 @@ from ingestkit_excel.models import (
     WrittenArtifacts,
 )
 from ingestkit_excel.inspector import ExcelInspector
+from ingestkit_excel.llm_classifier import LLMClassifier
 from ingestkit_excel.parser_chain import ParserChain
 from ingestkit_excel.protocols import (
     EmbeddingBackend,
@@ -63,6 +64,8 @@ __all__ = [
     "ParserChain",
     # Inspector
     "ExcelInspector",
+    # LLM Classifier
+    "LLMClassifier",
     # Errors
     "ErrorCode",
     "IngestError",
