@@ -154,6 +154,7 @@ class SheetProfile(BaseModel):
     merged_cell_count: int
     merged_cell_ratio: float
     header_row_detected: bool
+    header_row_index: int | None = None
     header_values: list[str]
     column_type_consistency: float
     numeric_ratio: float

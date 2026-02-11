@@ -27,6 +27,7 @@ from ingestkit_excel.models import (
     SheetRegion,
     WrittenArtifacts,
 )
+from ingestkit_excel.parser_chain import ParserChain
 from ingestkit_excel.protocols import (
     EmbeddingBackend,
     LLMBackend,
@@ -57,6 +58,8 @@ __all__ = [
     "SheetRegion",
     "WrittenArtifacts",
     "ProcessingResult",
+    # Parser
+    "ParserChain",
     # Errors
     "ErrorCode",
     "IngestError",
