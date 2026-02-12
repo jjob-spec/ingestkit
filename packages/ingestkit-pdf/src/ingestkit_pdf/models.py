@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ingestkit_pdf.errors import IngestError
+
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -371,6 +373,6 @@ class ProcessingResult(BaseModel):
 
     errors: list[str]
     warnings: list[str]
-    error_details: list[Any] = []  # list[IngestError] once errors.py (#23) exists
+    error_details: list[IngestError] = []
 
     processing_time_seconds: float
