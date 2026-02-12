@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from ingestkit_core.errors import BaseIngestError
 
 
 class ErrorCode(str, Enum):
@@ -52,7 +52,7 @@ class ErrorCode(str, Enum):
     W_ROWS_TRUNCATED = "W_ROWS_TRUNCATED"
 
 
-class IngestError(BaseModel):
+class IngestError(BaseIngestError):
     """Structured error with code, message, and context.
 
     Provides a normalized error representation for pipeline failures and
@@ -60,8 +60,5 @@ class IngestError(BaseModel):
     and optional context about which sheet and processing stage produced it.
     """
 
-    code: ErrorCode
-    message: str
+    code: ErrorCode  # type: ignore[assignment]  # narrows base str to ErrorCode
     sheet_name: str | None = None
-    stage: str | None = None
-    recoverable: bool = False
