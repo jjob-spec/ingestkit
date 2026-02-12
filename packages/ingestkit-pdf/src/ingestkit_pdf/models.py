@@ -4,16 +4,27 @@ This module defines the complete data model layer referenced throughout the
 pipeline: eight classification/processing enums, the deterministic ``IngestKey``,
 four typed stage-artifact models, per-page and document-level models, and the
 final ``ProcessingResult``.
+
+Shared types (``IngestKey``, ``ClassificationTier``, ``EmbedStageResult``,
+``ChunkPayload``, ``WrittenArtifacts``, ``BaseChunkMetadata``) are re-exported
+from ``ingestkit_core`` so that existing import paths continue to work.
 """
 
 from __future__ import annotations
 
-import hashlib
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
 
+from ingestkit_core.models import (
+    BaseChunkMetadata,
+    ChunkPayload,
+    ClassificationTier,
+    EmbedStageResult,
+    IngestKey,
+    WrittenArtifacts,
+)
 from ingestkit_pdf.errors import IngestError
 
 
@@ -45,14 +56,6 @@ class PageType(str, Enum):
     BLANK = "blank"
     VECTOR_ONLY = "vector_only"
     TOC = "toc"
-
-
-class ClassificationTier(str, Enum):
-    """Which detection tier produced the classification result."""
-
-    RULE_BASED = "rule_based"
-    LLM_BASIC = "llm_basic"
-    LLM_REASONING = "llm_reasoning"
 
 
 class IngestionMethod(str, Enum):
@@ -89,32 +92,6 @@ class ContentType(str, Enum):
     IMAGE_DESCRIPTION = "image_description"
     FOOTER = "footer"
     HEADER = "header"
-
-
-# ---------------------------------------------------------------------------
-# Idempotency
-# ---------------------------------------------------------------------------
-
-
-class IngestKey(BaseModel):
-    """Deterministic key for deduplication.
-
-    Combines content hash, source URI, parser version, and optional tenant ID
-    into a single SHA-256 digest.
-    """
-
-    content_hash: str
-    source_uri: str
-    parser_version: str
-    tenant_id: str | None = None
-
-    @property
-    def key(self) -> str:
-        """Deterministic string key for dedup lookups."""
-        parts = [self.content_hash, self.source_uri, self.parser_version]
-        if self.tenant_id:
-            parts.append(self.tenant_id)
-        return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -250,22 +227,17 @@ class TableResult(BaseModel):
     continuation_group_id: str | None = None
 
 
-class PDFChunkMetadata(BaseModel):
-    """Standardized metadata attached to every chunk."""
+class PDFChunkMetadata(BaseChunkMetadata):
+    """Standardized metadata attached to every chunk.
 
-    source_uri: str
+    Extends ``BaseChunkMetadata`` from core with PDF-specific fields.
+    """
+
     source_format: str = "pdf"
     page_numbers: list[int]
-    ingestion_method: str
-    parser_version: str
-    chunk_index: int
-    chunk_hash: str
-    ingest_key: str
-    ingest_run_id: str
-    tenant_id: str | None = None
+    ingest_run_id: str  # type: ignore[assignment]  # PDF requires this (base has Optional)
     heading_path: list[str] | None = None
     content_type: str | None = None
-    section_title: str | None = None
     doc_title: str | None = None
     doc_author: str | None = None
     doc_date: str | None = None
@@ -273,20 +245,8 @@ class PDFChunkMetadata(BaseModel):
     ocr_confidence: float | None = None
     ocr_dpi: int | None = None
     ocr_preprocessing: list[str] | None = None
-    table_name: str | None = None
     table_index: int | None = None
-    row_count: int | None = None
-    columns: list[str] | None = None
     language: str | None = None
-
-
-class ChunkPayload(BaseModel):
-    """A single chunk ready for vector store upsert."""
-
-    id: str
-    text: str
-    vector: list[float]
-    metadata: PDFChunkMetadata
 
 
 # ---------------------------------------------------------------------------
@@ -329,25 +289,9 @@ class OCRStageResult(BaseModel):
     engine_fallback_used: bool = False
 
 
-class EmbedStageResult(BaseModel):
-    """Typed output of the embedding stage."""
-
-    texts_embedded: int
-    embedding_dimension: int
-    embed_duration_seconds: float
-
-
 # ---------------------------------------------------------------------------
 # Result Models
 # ---------------------------------------------------------------------------
-
-
-class WrittenArtifacts(BaseModel):
-    """IDs of everything written to backends, enabling caller-side rollback."""
-
-    vector_point_ids: list[str] = []
-    vector_collection: str | None = None
-    db_table_names: list[str] = []
 
 
 class ProcessingResult(BaseModel):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from ingestkit_core.errors import BaseIngestError
 
 
 class ErrorCode(str, Enum):
@@ -72,7 +72,7 @@ class ErrorCode(str, Enum):
     W_SECURITY_OVERRIDE = "W_SECURITY_OVERRIDE"
 
 
-class IngestError(BaseModel):
+class IngestError(BaseIngestError):
     """Structured error with code, message, and context.
 
     Unlike the Excel variant (which uses ``sheet_name``), the PDF variant
@@ -80,8 +80,5 @@ class IngestError(BaseModel):
     document.
     """
 
-    code: ErrorCode
-    message: str
+    code: ErrorCode  # type: ignore[assignment]  # narrows base str to ErrorCode
     page_number: int | None = None
-    stage: str | None = None
-    recoverable: bool = False
