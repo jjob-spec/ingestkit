@@ -1,10 +1,19 @@
 """ingestkit-excel -- Excel file ingestion plugin for the ingestkit framework.
 
-Public API exports for models, enums, errors, configuration, and backend
-protocols.  Higher-level components (``ExcelRouter``, ``create_default_router``)
-will be exported here once implemented in subsequent issues.
+Public API exports for models, enums, errors, configuration, backend
+protocols, and concrete backend implementations.  Higher-level components
+(``ExcelRouter``, ``create_default_router``) will be exported here once
+implemented in subsequent issues.
 """
 
+from ingestkit_excel.backends import (
+    MilvusVectorStore,
+    OllamaEmbedding,
+    OllamaLLM,
+    PostgresStructuredDB,
+    QdrantVectorStore,
+    SQLiteStructuredDB,
+)
 from ingestkit_excel.config import ExcelProcessorConfig
 from ingestkit_excel.errors import ErrorCode, IngestError
 from ingestkit_excel.idempotency import compute_ingest_key
@@ -81,4 +90,11 @@ __all__ = [
     "StructuredDBBackend",
     "LLMBackend",
     "EmbeddingBackend",
+    # Concrete backends
+    "SQLiteStructuredDB",
+    "QdrantVectorStore",
+    "OllamaLLM",
+    "OllamaEmbedding",
+    "MilvusVectorStore",
+    "PostgresStructuredDB",
 ]
