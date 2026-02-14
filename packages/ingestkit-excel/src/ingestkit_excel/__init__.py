@@ -1,9 +1,7 @@
 """ingestkit-excel -- Excel file ingestion plugin for the ingestkit framework.
 
 Public API exports for models, enums, errors, configuration, backend
-protocols, and concrete backend implementations.  Higher-level components
-(``ExcelRouter``, ``create_default_router``) will be exported here once
-implemented in subsequent issues.
+protocols, concrete backend implementations, and the top-level orchestrator.
 """
 
 from ingestkit_excel.backends import (
@@ -40,6 +38,7 @@ from ingestkit_excel.inspector import ExcelInspector
 from ingestkit_excel.llm_classifier import LLMClassifier
 from ingestkit_excel.parser_chain import ParserChain
 from ingestkit_excel.processors import HybridSplitter, StructuredDBProcessor, TextSerializer
+from ingestkit_excel.router import ExcelRouter, create_default_router
 from ingestkit_excel.protocols import (
     EmbeddingBackend,
     LLMBackend,
@@ -90,6 +89,9 @@ __all__ = [
     "StructuredDBBackend",
     "LLMBackend",
     "EmbeddingBackend",
+    # Router
+    "ExcelRouter",
+    "create_default_router",
     # Concrete backends
     "SQLiteStructuredDB",
     "QdrantVectorStore",
