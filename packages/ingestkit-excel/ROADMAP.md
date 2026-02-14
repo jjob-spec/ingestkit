@@ -103,11 +103,62 @@ These items are valid but require operational experience or production data to i
 
 ---
 
+## Code Quality / Technical Debt
+
+Items identified during the February 2026 cross-project code review. These are small-to-medium improvements that should be addressed during v1 stabilization, before production use.
+
+### 15. Extract Shared Retry Utility
+**Review ref:** Code review 2026-02-14
+**What:** Qdrant and Ollama backends both implement exponential backoff with nearly identical logic (sleep, retry count, backoff multiplier). Extract to a shared `retry_with_backoff()` utility in `ingestkit-core`.
+**Why it matters:** Duplicated retry logic diverges over time. One backend gets a fix; the other doesn't. A shared utility ensures consistent behavior across all backends and future packages (pdf, docx).
+**Effort:** Small — extract existing code, add tests, update both call sites.
+
+### 16. Async I/O Support
+**Review ref:** Code review 2026-02-14
+**What:** All I/O is synchronous (`httpx.post()` for Ollama, blocking Qdrant calls). Add `httpx.AsyncClient` option for backends that make network calls.
+**Why deferred from v1:** Synchronous is correct for a library that processes one file at a time. The caller can parallelize across files with threads or processes.
+**Trigger to revisit:** When the VE-RAG-System orchestration layer needs to process multiple files concurrently within a single process (e.g., async FastAPI endpoint calling ingestkit).
+**Effort:** Medium — requires async protocol variants or dual sync/async implementations.
+
+### 17. Externalize LLM Prompt Templates
+**Review ref:** Code review 2026-02-14
+**What:** Classification and reasoning prompts are hardcoded strings in `llm_classifier.py`. Move to configurable prompt templates (Jinja2 or simple string templates) loadable from files.
+**Why it matters:** Prompt tuning is the most common iteration cycle during pilot deployments. Editing Python source to change a prompt is error-prone and requires redeployment. External templates allow prompt iteration without code changes.
+**Effort:** Small — extract strings to template files, add `prompt_template_dir` config parameter.
+
+### 18. Configurable Logger Names
+**Review ref:** Code review 2026-02-14
+**What:** All modules use hardcoded `logging.getLogger("ingestkit_excel")`. When embedding the library in a larger application, callers may want logs under their own logger hierarchy (e.g., `"ve_rag.ingest.excel"`).
+**Why deferred from v1:** Standard practice for libraries is `getLogger(__name__)` which produces `ingestkit_excel.parser_chain`, `ingestkit_excel.inspector`, etc. The current approach is functional but non-standard.
+**Effort:** Small — replace hardcoded names with `__name__`, optionally add a `configure_logging(logger_name=)` setup function.
+
+### 19. Standardize Test Mock Usage
+**Review ref:** Code review 2026-02-14
+**What:** `conftest.py` defines excellent Protocol-conforming mock classes (`MockVectorStore`, `MockStructuredDB`, `MockLLM`, `MockEmbedding`). However, some tests use `MagicMock()` instead. Standardize on the typed mocks everywhere.
+**Why it matters:** `MagicMock()` accepts any method call without error — it can't catch Protocol violations. The typed mocks from conftest enforce correct method signatures and return types.
+**Effort:** Small — audit tests for `MagicMock()` usage, replace with conftest fixtures.
+
+### 20. Integration Test Markers
+**Review ref:** Code review 2026-02-14
+**What:** Add `@pytest.mark.integration` tests that run against real Qdrant, Ollama, and SQLite backends. Keep them skipped by default (require `--run-integration` flag).
+**Why it matters:** 603 unit tests verify logic with mocks. Integration tests verify that real backends accept the data formats, handle edge cases, and return expected responses. Critical before production deployment.
+**Effort:** Medium — write test fixtures that spin up or connect to local services, add pytest markers and CI configuration.
+
+### 21. Performance Documentation
+**Review ref:** Code review 2026-02-14
+**What:** Document expected throughput, memory usage, and latency for representative workbooks (small/medium/large). Include parser chain timing, classification latency, and embedding throughput.
+**Why it matters:** Without baseline numbers, operators can't capacity-plan or detect regressions. The stage artifacts already capture durations — just need to run and document them.
+**Effort:** Small — run benchmarks on sample files, document in `docs/performance.md`.
+
+---
+
 ## Implementation Priority (when ready)
 
 | Priority | Items | Trigger |
 |----------|-------|---------|
-| **First** (with ingestkit-core) | Schema versioning (#7), tenant isolation enforcement (#3) | When building second ingestkit package (ingestkit-pdf) |
+| **Immediate** (v1 stabilization) | Retry utility (#15), logger names (#18), mock standardization (#19) | Before production use |
+| **First** (with ingestkit-core) | Schema versioning (#7), tenant isolation enforcement (#3), retry utility (#15) | When building second ingestkit package (ingestkit-pdf) |
 | **Second** (with platform) | State machine (#1), atomicity (#2), concurrency locks (#6), retention (#13), audit (#14) | When building the VE-RAG-System orchestration layer |
-| **Third** (post-pilot) | Dashboard (#4), cost controls (#5), benchmarks (#10), A/B eval (#8), model governance (#11) | After first paid pilot with real client files |
-| **Fourth** (when needed) | Fail-open policy (#9), large workbook streaming (#12) | When production data reveals specific needs |
+| **Third** (pre-pilot) | Prompt templates (#17), integration tests (#20), performance docs (#21) | Before first pilot deployment |
+| **Fourth** (post-pilot) | Dashboard (#4), cost controls (#5), benchmarks (#10), A/B eval (#8), model governance (#11) | After first paid pilot with real client files |
+| **Fifth** (when needed) | Fail-open policy (#9), large workbook streaming (#12), async I/O (#16) | When production data reveals specific needs |
