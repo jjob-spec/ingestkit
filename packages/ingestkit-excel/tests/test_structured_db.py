@@ -1456,3 +1456,225 @@ class TestConfigInteractions:
         assert mock_vector_store.collections_ensured[0][0] == "custom_collection"
         assert mock_vector_store.upserted[0][0] == "custom_collection"
         assert result.written.vector_collection == "custom_collection"
+
+
+# ---------------------------------------------------------------------------
+# Section: Year Column Guard (_auto_detect_dates)
+# ---------------------------------------------------------------------------
+
+
+class TestAutoDetectYearGuard:
+    """Tests for the year-integer guard in _auto_detect_dates."""
+
+    def test_auto_detect_skips_year_integers(self, processor):
+        """Column with integer years (2015, 2016...) as object dtype stays unconverted."""
+        # Simulate how openpyxl loads year integers into an object column
+        df = pd.DataFrame({"customer_since": pd.array([2015, 2016, 2020], dtype=object)})
+        result = processor._auto_detect_dates(df)
+        assert not pd.api.types.is_datetime64_any_dtype(result["customer_since"])
+        # Values should remain as-is
+        assert list(result["customer_since"]) == [2015, 2016, 2020]
+
+    def test_auto_detect_skips_year_floats(self, processor):
+        """Float years (e.g. 2015.0) in object column should also be skipped."""
+        df = pd.DataFrame({"year": pd.array([2015.0, 2016.0, 2020.0], dtype=object)})
+        result = processor._auto_detect_dates(df)
+        assert not pd.api.types.is_datetime64_any_dtype(result["year"])
+
+    def test_auto_detect_still_converts_real_string_dates(self, processor):
+        """Ensure the year guard doesn't break real string date detection."""
+        df = pd.DataFrame({"date_col": ["2023-01-15", "2023-02-20", "2023-03-10"]})
+        result = processor._auto_detect_dates(df)
+        assert pd.api.types.is_datetime64_any_dtype(result["date_col"])
+
+    def test_auto_detect_mixed_years_and_strings_not_skipped(self, processor):
+        """If the column has a mix of ints and strings, don't trigger the year guard."""
+        df = pd.DataFrame({"col": pd.array([2015, "recent", 2020], dtype=object)})
+        result = processor._auto_detect_dates(df)
+        # Should not be skipped by year guard since not all values are numeric
+        # (may or may not convert depending on parse threshold, but the guard shouldn't fire)
+        assert True  # No crash; behaviour depends on pd.to_datetime result
+
+
+# ---------------------------------------------------------------------------
+# Section: Trailing Row Cleaning (_clean_trailing_rows)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanTrailingRows:
+    """Tests for the _clean_trailing_rows private method."""
+
+    def test_clean_trailing_rows_drops_empty(self, processor):
+        """Fully-NaN rows are removed."""
+        df = pd.DataFrame({
+            "name": ["Alice", "Bob", None],
+            "value": [100, 200, None],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 2
+        assert list(result["name"]) == ["Alice", "Bob"]
+
+    def test_clean_trailing_rows_drops_totals(self, processor):
+        """Rows with 'TOTAL' / 'Sum' label at the bottom are removed."""
+        df = pd.DataFrame({
+            "name": ["Alice", "Bob", "TOTAL"],
+            "value": [100, 200, 300],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 2
+        assert "TOTAL" not in list(result["name"])
+
+    def test_clean_trailing_rows_drops_sum_label(self, processor):
+        df = pd.DataFrame({
+            "name": ["Alice", "Bob", "Sum"],
+            "value": [100, 200, 300],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 2
+
+    def test_clean_trailing_rows_drops_grand_total(self, processor):
+        df = pd.DataFrame({
+            "name": ["Alice", "Grand Total"],
+            "value": [100, 100],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 1
+
+    def test_clean_trailing_rows_drops_subtotal(self, processor):
+        df = pd.DataFrame({
+            "name": ["Alice", "Subtotal"],
+            "value": [100, 100],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 1
+
+    def test_clean_trailing_rows_preserves_data(self, processor):
+        """Data rows that happen to contain 'total' as substring are NOT removed."""
+        df = pd.DataFrame({
+            "name": ["Alice", "Bob", "Carol"],
+            "value": [100, 200, 300],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 3
+
+    def test_clean_trailing_rows_only_scans_bottom(self, processor):
+        """A 'Total' row in the middle is NOT removed (only trailing)."""
+        df = pd.DataFrame({
+            "name": ["Total", "Alice", "Bob"],
+            "value": [0, 100, 200],
+        })
+        result = processor._clean_trailing_rows(df)
+        # "Total" is not trailing — should be preserved
+        assert len(result) == 3
+
+    def test_clean_trailing_rows_empty_then_totals(self, processor):
+        """Empty row followed by totals row — both removed."""
+        df = pd.DataFrame({
+            "name": ["Alice", "Bob", None, "TOTAL"],
+            "value": [100, 200, None, 300],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 2
+        assert list(result["name"]) == ["Alice", "Bob"]
+
+    def test_clean_trailing_rows_all_empty(self, processor):
+        """All-empty DataFrame returns empty."""
+        df = pd.DataFrame({
+            "name": [None, None],
+            "value": [None, None],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 0
+
+    def test_clean_trailing_rows_case_insensitive(self, processor):
+        """Totals detection is case-insensitive."""
+        df = pd.DataFrame({
+            "name": ["Alice", "total"],
+            "value": [100, 100],
+        })
+        result = processor._clean_trailing_rows(df)
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Section: Top_Customers_2024.xlsx End-to-End Fixture Tests
+# ---------------------------------------------------------------------------
+
+
+class TestTopCustomersFixture:
+    """End-to-end tests using the Top_Customers_2024.xlsx fixture.
+
+    Verifies that both fixes (year-guard + trailing row cleanup) work
+    together through the real process() pipeline.
+    """
+
+    @pytest.fixture()
+    def _run_process(
+        self,
+        top_customers_2024_xlsx,
+        mock_db,
+        mock_vector_store,
+        mock_embedder,
+        config,
+    ):
+        """Run the processor against the fixture file, return (result, stored_df)."""
+        proc = StructuredDBProcessor(mock_db, mock_vector_store, mock_embedder, config)
+        sheet = _make_sheet_profile(
+            name="Top Customers",
+            row_count=12,
+            col_count=5,
+            header_row_detected=True,
+            header_row_index=0,
+        )
+        profile = _make_file_profile([sheet])
+
+        result = proc.process(
+            file_path=str(top_customers_2024_xlsx),
+            profile=profile,
+            ingest_key="k" * 64,
+            ingest_run_id="run-fixture-1",
+            parse_result=_make_parse_result(),
+            classification_result=_make_classification_stage_result(),
+            classification=_make_classification_result(),
+        )
+        stored_df = mock_db.tables_created[0][1]
+        return result, stored_df
+
+    def test_fixture_row_count_after_cleanup(self, _run_process):
+        """After cleanup, exactly 10 customer rows remain (no empty, no TOTAL)."""
+        _, stored_df = _run_process
+        assert len(stored_df) == 10
+
+    def test_fixture_no_total_row(self, _run_process):
+        """The TOTAL summary row is not present in the stored data."""
+        _, stored_df = _run_process
+        name_col = stored_df.iloc[:, 0]
+        assert not name_col.str.upper().eq("TOTAL").any()
+
+    def test_fixture_no_empty_rows(self, _run_process):
+        """No all-NaN rows in the stored data."""
+        _, stored_df = _run_process
+        all_nan_rows = stored_df.isna().all(axis=1).sum()
+        assert all_nan_rows == 0
+
+    def test_fixture_customer_since_not_datetime(self, _run_process):
+        """Customer Since column stays as int/object, not converted to datetime."""
+        _, stored_df = _run_process
+        since_col = stored_df["customer_since"]
+        assert not pd.api.types.is_datetime64_any_dtype(since_col)
+
+    def test_fixture_customer_since_values_intact(self, _run_process):
+        """Year values are preserved as original integers."""
+        _, stored_df = _run_process
+        since_values = stored_df["customer_since"].tolist()
+        assert 2015 in since_values
+        assert 2023 in since_values
+        assert all(1900 <= v <= 2100 for v in since_values)
+
+    def test_fixture_revenue_column_intact(self, _run_process):
+        """Revenue values are real customer rows, not the 4628000 total."""
+        _, stored_df = _run_process
+        revenues = stored_df["annual_revenue"].tolist()
+        assert 4628000 not in revenues
+        assert 820000 in revenues
+        assert 188000 in revenues

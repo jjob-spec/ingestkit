@@ -179,6 +179,9 @@ class StructuredDBProcessor:
                     header=header_arg,
                 )
 
+                # --- Step 1b: Drop empty and summary rows ---
+                df = self._clean_trailing_rows(df)
+
                 # --- Step 2: Clean column names ---
                 if config.clean_column_names:
                     cleaned = [clean_name(str(c)) for c in df.columns]
@@ -344,6 +347,42 @@ class StructuredDBProcessor:
     # Private methods
     # ------------------------------------------------------------------
 
+    _TOTALS_PATTERN = re.compile(r"^(total|sum|grand\s*total|subtotal)$", re.IGNORECASE)
+
+    def _clean_trailing_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove fully-empty rows and trailing totals/summary rows.
+
+        1. Drop rows where every cell is NaN.
+        2. Scan from the bottom up: if the first non-null text cell in a
+           row matches a totals keyword, drop that row.  Stop scanning
+           once a non-totals row is reached (totals are always trailing).
+        """
+        # Step 1: drop all-NaN rows
+        df = df.dropna(how="all").reset_index(drop=True)
+
+        if df.empty:
+            return df
+
+        # Step 2: drop trailing totals rows (bottom-up)
+        drop_indices: list[int] = []
+        for idx in reversed(df.index):
+            row = df.loc[idx]
+            # Find the first non-null value that is a string
+            first_text = None
+            for val in row:
+                if pd.notna(val) and isinstance(val, str):
+                    first_text = val.strip()
+                    break
+            if first_text is not None and self._TOTALS_PATTERN.match(first_text):
+                drop_indices.append(idx)
+            else:
+                break  # stop at first non-totals row
+
+        if drop_indices:
+            df = df.drop(index=drop_indices).reset_index(drop=True)
+
+        return df
+
     def _auto_detect_dates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Auto-detect and convert date columns in-place.
 
@@ -380,6 +419,14 @@ class StructuredDBProcessor:
 
             # Heuristic 2: String dates (object or string dtype)
             if series.dtype == object or pd.api.types.is_string_dtype(series):
+                # Guard: if all non-null values are integers in 1900–2100,
+                # they are plain year numbers, not dates.
+                numeric_vals = [v for v in non_null if isinstance(v, (int, float))]
+                if len(numeric_vals) == len(non_null) and len(numeric_vals) > 0 and all(
+                    1900 <= v <= 2100 for v in numeric_vals
+                ):
+                    continue
+
                 try:
                     parsed = pd.to_datetime(non_null, format="mixed", errors="coerce")
                     success_ratio = parsed.notna().sum() / len(non_null)

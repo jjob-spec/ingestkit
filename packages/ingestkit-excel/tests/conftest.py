@@ -378,6 +378,48 @@ def edge_chart_only_xlsx() -> pathlib.Path:
 
 
 @pytest.fixture(scope="session")
+def top_customers_2024_xlsx() -> pathlib.Path:
+    """Generate Top_Customers_2024.xlsx: tabular data with year-integer column,
+    trailing empty row, and a TOTAL summary row.
+
+    Columns: Customer Name (str), Industry (str), Annual Revenue (int),
+             Customer Since (int years as object dtype), Account Manager (str).
+
+    Row 11 is blank, row 12 has TOTAL label with summed revenue.
+    This fixture exercises:
+    - Year-as-date misinterpretation guard in _auto_detect_dates()
+    - Trailing empty + totals row cleanup in _clean_trailing_rows()
+    """
+    path = _xlsx_dir() / "Top_Customers_2024.xlsx"
+    if path.exists():
+        return path
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Top Customers"
+    ws.append(["Customer Name", "Industry", "Annual Revenue", "Customer Since", "Account Manager"])
+    customers = [
+        ("Acme Corp", "Manufacturing", 820000, 2015, "Sarah Chen"),
+        ("GlobalTech Inc", "Technology", 645000, 2017, "James Wilson"),
+        ("Pinnacle Health", "Healthcare", 590000, 2016, "Maria Garcia"),
+        ("Summit Financial", "Finance", 510000, 2019, "David Park"),
+        ("Atlas Logistics", "Transportation", 475000, 2018, "Rachel Adams"),
+        ("Vanguard Energy", "Energy", 430000, 2020, "Thomas Lee"),
+        ("Nexus Media", "Media", 380000, 2021, "Emily Turner"),
+        ("Horizon Retail", "Retail", 340000, 2016, "Michael Brooks"),
+        ("Quantum Labs", "Research", 250000, 2022, "Lisa Wang"),
+        ("Pacific Foods", "Food & Beverage", 188000, 2023, "Kevin O'Brien"),
+    ]
+    for row in customers:
+        ws.append(list(row))
+    # Row 12: empty row
+    ws.append([None, None, None, None, None])
+    # Row 13: totals row
+    ws.append(["TOTAL", None, 4628000, None, None])
+    wb.save(path)
+    return path
+
+
+@pytest.fixture(scope="session")
 def edge_large_xlsx() -> pathlib.Path:
     """Generate a large .xlsx with 100,001 rows (exceeds default max_rows_in_memory).
 
