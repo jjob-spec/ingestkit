@@ -7,8 +7,6 @@ defined in the FormTemplate (spec section 7.3).
 from __future__ import annotations
 
 import logging
-import re
-import threading
 from datetime import datetime
 from typing import Any
 
@@ -16,6 +14,7 @@ import openpyxl
 
 from ingestkit_forms.config import FormProcessorConfig
 from ingestkit_forms.errors import FormErrorCode, FormIngestException
+from ingestkit_forms.security import regex_match_with_timeout
 from ingestkit_forms.models import (
     ExtractedField,
     FieldMapping,
@@ -24,39 +23,6 @@ from ingestkit_forms.models import (
 )
 
 logger = logging.getLogger("ingestkit_forms")
-
-_REGEX_TIMEOUT_SECONDS = 1.0
-
-
-def _regex_match_with_timeout(
-    pattern: str,
-    value: str,
-    timeout: float = _REGEX_TIMEOUT_SECONDS,
-) -> bool | None:
-    """Match a regex pattern with timeout protection against ReDoS.
-
-    Uses ``re.fullmatch`` for validation (must match entire string).
-
-    Returns:
-        True if matches, False if no match, None if timeout or invalid pattern.
-    """
-    result: list[bool | None] = []
-
-    def _match() -> None:
-        try:
-            result.append(bool(re.fullmatch(pattern, value)))
-        except re.error:
-            result.append(None)
-
-    thread = threading.Thread(target=_match, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
-
-    if not result:
-        # Timeout occurred
-        return None
-    return result[0]
-
 
 class ExcelCellExtractor:
     """Extracts form field values from Excel files using cell address mappings.
@@ -358,7 +324,7 @@ class ExcelCellExtractor:
             return (None, None, [])
 
         str_value = str(value)
-        match_result = _regex_match_with_timeout(
+        match_result = regex_match_with_timeout(
             field.validation_pattern, str_value
         )
 

@@ -12,19 +12,26 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ingestkit_forms.errors import FormErrorCode, FormIngestException
+from ingestkit_forms.security import validate_regex_pattern
 from ingestkit_forms.matcher import (
     PageRenderer,
     compute_layout_fingerprint_from_file,
 )
 from ingestkit_forms.models import (
+    ExtractionPreview,
+    FormIngestRequest,
+    FormProcessingResult,
     FormTemplate,
     FormTemplateCreateRequest,
     FormTemplateUpdateRequest,
+    TemplateMatch,
 )
 
 if TYPE_CHECKING:
     from ingestkit_forms.config import FormProcessorConfig
+    from ingestkit_forms.matcher import FormMatcher
     from ingestkit_forms.protocols import FormTemplateStore
+    from ingestkit_forms.router import FormRouter
 
 logger = logging.getLogger("ingestkit_forms")
 
@@ -41,6 +48,8 @@ class FormTemplateAPI:
         store: FormTemplateStore,
         config: FormProcessorConfig,
         renderer: PageRenderer | None = None,
+        matcher: FormMatcher | None = None,
+        router: FormRouter | None = None,
     ) -> None:
         """Initialize the API.
 
@@ -48,10 +57,36 @@ class FormTemplateAPI:
             store: FormTemplateStore implementation for persistence.
             config: FormProcessorConfig with fingerprint and matching params.
             renderer: Optional page renderer for non-image file formats.
+            matcher: Optional FormMatcher for match_document.
+            router: Optional FormRouter for extract_form and preview_extraction.
         """
         self._store = store
         self._config = config
         self._renderer = renderer
+        self._matcher = matcher
+        self._router = router
+
+    @staticmethod
+    def _validate_field_patterns(fields: list) -> None:
+        """Validate all regex patterns compile successfully.
+
+        Raises FormIngestException with E_FORM_TEMPLATE_INVALID if any
+        validation_pattern is an invalid regex.
+        """
+        for field in fields:
+            if field.validation_pattern is not None:
+                error_msg = validate_regex_pattern(field.validation_pattern)
+                if error_msg is not None:
+                    raise FormIngestException(
+                        code=FormErrorCode.E_FORM_TEMPLATE_INVALID,
+                        message=(
+                            f"Invalid regex pattern for field '{field.field_name}': "
+                            f"{error_msg}"
+                        ),
+                        field_name=field.field_name,
+                        stage="api",
+                        recoverable=False,
+                    )
 
     def create_template(
         self,
@@ -69,6 +104,9 @@ class FormTemplateAPI:
             FormIngestError: E_FORM_TEMPLATE_STORE_UNAVAILABLE if store write fails.
         """
         template_id = str(uuid.uuid4())
+
+        # Validate regex patterns in field mappings
+        self._validate_field_patterns(template_def.fields)
 
         # Compute fingerprint (non-fatal if fails)
         fingerprint: bytes | None = None
@@ -152,6 +190,10 @@ class FormTemplateAPI:
             if template_def.fields is not None
             else existing.fields
         )
+
+        # Validate regex patterns if new fields provided
+        if template_def.fields is not None:
+            self._validate_field_patterns(fields)
 
         # Recompute fingerprint if new sample file provided
         fingerprint = existing.layout_fingerprint
@@ -263,3 +305,150 @@ class FormTemplateAPI:
                 recoverable=False,
             )
         return versions
+
+    # ------------------------------------------------------------------
+    # Plugin API operations 7-10 (spec section 9.1)
+    # ------------------------------------------------------------------
+
+    def render_document(
+        self,
+        file_path: str,
+        page: int = 0,
+        dpi: int = 150,
+    ) -> bytes:
+        """Render a document page as PNG bytes.
+
+        Uses the extractors rendering module for images and PDFs.
+
+        Args:
+            file_path: Path to the document file.
+            page: 0-indexed page number.
+            dpi: Target DPI for rendering.
+
+        Returns:
+            PNG-encoded bytes of the rendered page.
+
+        Raises:
+            FormIngestException if rendering fails.
+        """
+        import io
+
+        from ingestkit_forms.extractors._rendering import get_page_image
+
+        try:
+            image = get_page_image(file_path, page, dpi)
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            return buf.getvalue()
+        except FormIngestException:
+            raise
+        except Exception as exc:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_EXTRACTION_FAILED,
+                message=f"Document rendering failed: {exc}",
+                stage="api",
+                recoverable=False,
+            ) from exc
+
+    def preview_extraction(
+        self,
+        file_path: str,
+        template_id: str,
+        template_version: int | None = None,
+    ) -> ExtractionPreview:
+        """Preview extraction results without persisting.
+
+        Runs the extraction pipeline through the router's internal
+        components (extractor + confidence) but skips dual-write.
+
+        Args:
+            file_path: Path to the document.
+            template_id: Template to apply.
+            template_version: Specific version (None = latest).
+
+        Returns:
+            ExtractionPreview with extracted fields and confidence.
+
+        Raises:
+            FormIngestException if router is not configured or extraction fails.
+        """
+        if self._router is None:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_EXTRACTION_FAILED,
+                message="FormRouter not configured -- cannot preview extraction",
+                stage="api",
+                recoverable=False,
+            )
+
+        template = self.get_template(template_id, template_version)
+        method, fields, _duration = self._router._run_extraction(
+            file_path, template
+        )
+        fields, overall_confidence, warnings = (
+            self._router._apply_confidence_and_vlm(fields, template, file_path)
+        )
+
+        return ExtractionPreview(
+            template_id=template.template_id,
+            template_name=template.name,
+            template_version=template.version,
+            fields=fields,
+            overall_confidence=overall_confidence,
+            extraction_method=method,
+            warnings=warnings,
+        )
+
+    def match_document(
+        self,
+        file_path: str,
+        tenant_id: str | None = None,
+    ) -> list[TemplateMatch]:
+        """Match a document against registered templates.
+
+        Args:
+            file_path: Path to the document.
+            tenant_id: Optional tenant filter (unused by matcher directly,
+                reserved for future filtering).
+
+        Returns:
+            List of TemplateMatch sorted by confidence descending.
+
+        Raises:
+            FormIngestException if matcher is not configured.
+        """
+        if self._matcher is None:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_EXTRACTION_FAILED,
+                message="FormMatcher not configured -- cannot match document",
+                stage="api",
+                recoverable=False,
+            )
+
+        return self._matcher.match_document(file_path)
+
+    def extract_form(
+        self,
+        request: FormIngestRequest,
+    ) -> FormProcessingResult | None:
+        """Execute the full form extraction pipeline.
+
+        Delegates to the router's ``extract_form`` method.
+
+        Args:
+            request: FormIngestRequest with file path and optional template_id.
+
+        Returns:
+            FormProcessingResult on success, None on graceful fallthrough.
+
+        Raises:
+            FormIngestException if router is not configured.
+        """
+        if self._router is None:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_EXTRACTION_FAILED,
+                message="FormRouter not configured -- cannot extract form",
+                stage="api",
+                recoverable=False,
+            )
+
+        return self._router.extract_form(request)

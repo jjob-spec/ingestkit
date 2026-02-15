@@ -31,8 +31,8 @@ from ingestkit_forms.extractors.ocr_overlay import (
     _build_ocr_config,
     _crop_field_region,
     _post_process_value,
-    _regex_match_with_timeout,
 )
+from ingestkit_forms.security import regex_match_with_timeout
 from ingestkit_forms.models import (
     BoundingBox,
     CellAddress,
@@ -1430,10 +1430,11 @@ class TestOCRSecurity:
 
     def test_regex_timeout_protection(self):
         """ReDoS pattern with pathological input -> returns None (timeout) or False."""
-        result = _regex_match_with_timeout(
+        result = regex_match_with_timeout(
             r"(a+)+$",
             "a" * 25 + "!",
             timeout=1.0,
+            match_mode="match",
         )
         # Either times out (None) or fails to match (False)
         assert result is None or result is False
@@ -2027,9 +2028,7 @@ def test_excel_corrupt_workbook_raises_exception(form_config):
 @pytest.mark.unit
 def test_excel_validation_redos_protection():
     """ReDoS pattern with pathological input -> timeout or no match."""
-    from ingestkit_forms.extractors.excel_cell import _regex_match_with_timeout
-
-    result = _regex_match_with_timeout(
+    result = regex_match_with_timeout(
         r"(a+)+$",
         "a" * 25 + "!",
         timeout=1.0,

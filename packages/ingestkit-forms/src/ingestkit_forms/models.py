@@ -189,7 +189,8 @@ class FormTemplate(BaseModel):
     )
     fields: list[FieldMapping] = Field(
         min_length=1,
-        description="At least one field mapping is required.",
+        max_length=200,
+        description="At least one field mapping is required. Max 200 fields.",
     )
     layout_fingerprint: bytes | None = Field(
         default=None,
@@ -457,7 +458,7 @@ class FormTemplateCreateRequest(BaseModel):
         description="Path to a sample form document used to compute fingerprint.",
     )
     page_count: int = Field(ge=1)
-    fields: list[FieldMapping] = Field(min_length=1)
+    fields: list[FieldMapping] = Field(min_length=1, max_length=200)
     tenant_id: str | None = None
     created_by: str = "system"
 
@@ -472,7 +473,7 @@ class FormTemplateUpdateRequest(BaseModel):
         description="New sample document for recomputing fingerprint.",
     )
     page_count: int | None = None
-    fields: list[FieldMapping] | None = None
+    fields: list[FieldMapping] | None = Field(default=None, max_length=200)
 
 
 class ExtractionPreview(BaseModel):
