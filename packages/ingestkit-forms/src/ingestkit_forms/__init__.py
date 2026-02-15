@@ -1,14 +1,22 @@
 """ingestkit-forms -- Template-driven form extraction plugin for ingestkit.
 
 Public API exports for form template matching, extraction, and output.
-Stub module -- implementations will be added in subsequent issues.
 """
 
+from ingestkit_forms.api import FormTemplateAPI
 from ingestkit_forms.config import FormProcessorConfig, RedactTarget
-from ingestkit_forms.errors import FormErrorCode, FormIngestError
+from ingestkit_forms.errors import FormErrorCode, FormIngestError, FormIngestException
+from ingestkit_forms.matcher import (
+    FormMatcher,
+    compute_layout_fingerprint,
+    compute_layout_fingerprint_from_file,
+    compute_layout_similarity,
+    detect_source_format,
+)
 from ingestkit_forms.protocols import (
     EmbeddingBackend,
     FormTemplateStore,
+    LayoutFingerprinter,
     OCRBackend,
     OCRRegionResult,
     PDFWidgetBackend,
@@ -18,6 +26,7 @@ from ingestkit_forms.protocols import (
     VLMFieldResult,
     WidgetField,
 )
+from ingestkit_forms.stores import FileSystemTemplateStore
 from ingestkit_forms.models import (
     BoundingBox,
     CellAddress,
@@ -44,6 +53,7 @@ __all__: list[str] = [
     # Errors and config (from issues #56, #58)
     "FormErrorCode",
     "FormIngestError",
+    "FormIngestException",
     "FormProcessorConfig",
     "RedactTarget",
     # Enums
@@ -85,4 +95,17 @@ __all__: list[str] = [
     "VectorStoreBackend",
     "StructuredDBBackend",
     "EmbeddingBackend",
+    # API (from issue #61)
+    "FormTemplateAPI",
+    # Matcher (from issue #61)
+    "compute_layout_fingerprint",
+    "compute_layout_similarity",
+    "compute_layout_fingerprint_from_file",
+    # Matcher (from issue #62)
+    "FormMatcher",
+    "detect_source_format",
+    # Protocol additions (from issue #62)
+    "LayoutFingerprinter",
+    # Stores (from issue #61)
+    "FileSystemTemplateStore",
 ]

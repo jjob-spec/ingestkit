@@ -30,6 +30,7 @@ __all__ = [
     "EmbeddingBackend",
     # Form-specific protocols
     "FormTemplateStore",
+    "LayoutFingerprinter",
     "OCRBackend",
     "PDFWidgetBackend",
     "VLMBackend",
@@ -130,6 +131,32 @@ class FormTemplateStore(Protocol):
         """Return (template_id, name, version, fingerprint) for all active templates.
 
         Used by the matcher for efficient batch comparison.
+        """
+        ...
+
+
+@runtime_checkable
+class LayoutFingerprinter(Protocol):
+    """Interface for computing structural layout fingerprints.
+
+    Concrete implementations render documents at a target DPI,
+    convert to grayscale, threshold, and quantize into an NxM grid.
+    The matcher consumes pre-computed fingerprints; this protocol
+    enables dependency injection for the computation step.
+    """
+
+    def compute_fingerprint(self, file_path: str) -> list[bytes]:
+        """Compute per-page layout fingerprints for a document.
+
+        Each element in the returned list is a single page's fingerprint:
+        a bytes object of length ``rows * cols`` where each byte is a
+        quantization level (0-3).
+
+        Returns:
+            List of per-page fingerprint bytes, ordered by page number.
+
+        Raises:
+            FormIngestException with E_FORM_FINGERPRINT_FAILED on failure.
         """
         ...
 

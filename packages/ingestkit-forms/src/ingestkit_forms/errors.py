@@ -90,6 +90,10 @@ class FormIngestError(BaseIngestError):
     Extends ``BaseIngestError`` from ingestkit-core with form-specific
     location and diagnostic fields. Follows the same pattern as
     ``IngestError`` in ingestkit-excel.
+
+    Note: This is a Pydantic model (data structure), not a Python Exception.
+    To raise errors, use ``FormIngestException`` which wraps this model
+    and can be used with ``raise``/``except``.
     """
 
     code: FormErrorCode  # type: ignore[assignment]  # narrows base str to FormErrorCode
@@ -110,3 +114,35 @@ class FormIngestError(BaseIngestError):
         default=None,
         description="Why fallback was triggered (for degraded-path errors).",
     )
+
+
+class FormIngestException(Exception):
+    """Raisable exception wrapping a FormIngestError data model.
+
+    Use this when you need to raise/catch form errors in control flow.
+    Carries the structured ``FormIngestError`` as the ``.error`` attribute
+    for inspection and serialization.
+
+    Convenience properties delegate to the underlying error model for
+    common fields (``code``, ``message``, ``stage``, ``recoverable``).
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        self.error = FormIngestError(**kwargs)  # type: ignore[arg-type]
+        super().__init__(self.error.message)
+
+    @property
+    def code(self) -> FormErrorCode:
+        return self.error.code
+
+    @property
+    def message(self) -> str:
+        return self.error.message
+
+    @property
+    def stage(self) -> str | None:
+        return self.error.stage
+
+    @property
+    def recoverable(self) -> bool:
+        return self.error.recoverable
