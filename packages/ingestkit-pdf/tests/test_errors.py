@@ -56,7 +56,7 @@ class TestErrorCodeValues:
         assert len(warnings) == 15
 
     def test_total_member_count(self):
-        assert len(ErrorCode) == 42
+        assert len(ErrorCode) == 45
 
     def test_all_errors_prefixed(self):
         for code in ErrorCode:

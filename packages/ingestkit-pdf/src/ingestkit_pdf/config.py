@@ -113,6 +113,11 @@ class PDFProcessorConfig(BaseModel):
     backend_max_retries: int = 2
     backend_backoff_base: float = 1.0
 
+    # --- Execution Backend ---
+    execution_backend: str = "local"                # "local" or "distributed"
+    execution_max_workers: int = 4                  # max ProcessPoolExecutor workers
+    execution_queue_url: str | None = None          # Redis/RabbitMQ URL for distributed
+
     # --- Logging / PII Safety ---
     log_sample_text: bool = False
     log_llm_prompts: bool = False
