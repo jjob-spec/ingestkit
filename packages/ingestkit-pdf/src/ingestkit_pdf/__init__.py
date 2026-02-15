@@ -27,6 +27,12 @@ from ingestkit_pdf.models import (
 )
 from ingestkit_pdf.processors.ocr_processor import OCRProcessor
 from ingestkit_pdf.processors.text_extractor import TextExtractor
+from ingestkit_pdf.execution import (
+    DistributedExecutionBackend,
+    ExecutionBackend,
+    ExecutionError,
+    LocalExecutionBackend,
+)
 from ingestkit_pdf.router import PDFRouter, create_default_router
 
 __all__ = [
@@ -67,4 +73,9 @@ __all__ = [
     # Processors
     "TextExtractor",
     "OCRProcessor",
+    # Execution backends
+    "ExecutionBackend",
+    "ExecutionError",
+    "LocalExecutionBackend",
+    "DistributedExecutionBackend",
 ]

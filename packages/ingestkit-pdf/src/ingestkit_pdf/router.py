@@ -17,12 +17,12 @@ inconclusive after all tiers, it returns a ``ProcessingResult`` with
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import time
 import uuid
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,10 @@ from ingestkit_pdf.models import (
 )
 from ingestkit_pdf.processors.ocr_processor import OCRProcessor
 from ingestkit_pdf.processors.text_extractor import TextExtractor
+from ingestkit_pdf.execution import (
+    ExecutionBackend,
+    LocalExecutionBackend,
+)
 from ingestkit_pdf.protocols import (
     EmbeddingBackend,
     LLMBackend,
@@ -76,7 +80,8 @@ class PDFRouter:
     classifier, quality assessor, layout analyzer, and the two processor
     paths) from the injected backends and config, then exposes
     :meth:`can_handle`, :meth:`process`, and :meth:`process_batch` as
-    the public API.
+    the public API.  An async variant :meth:`aprocess` wraps ``process()``
+    via ``asyncio.to_thread()`` for use in async frameworks.
 
     Parameters
     ----------
@@ -99,6 +104,7 @@ class PDFRouter:
         llm: LLMBackend,
         embedder: EmbeddingBackend,
         config: PDFProcessorConfig | None = None,
+        execution: ExecutionBackend | None = None,
     ) -> None:
         self._config = config or PDFProcessorConfig()
 
@@ -135,6 +141,15 @@ class PDFRouter:
         self._structured_db = structured_db
         self._llm = llm
         self._embedder = embedder
+
+        # Execution backend (defaults to LocalExecutionBackend if not injected)
+        if execution is not None:
+            self._execution = execution
+        else:
+            self._execution = LocalExecutionBackend(
+                process_fn=_process_single_file,
+                max_workers=self._config.execution_max_workers,
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -425,15 +440,44 @@ class PDFRouter:
         finally:
             doc.close()
 
+    async def aprocess(
+        self,
+        file_path: str,
+        source_uri: str | None = None,
+    ) -> ProcessingResult:
+        """Async wrapper around :meth:`process`.
+
+        Offloads the synchronous ``process()`` call to a thread via
+        ``asyncio.to_thread()`` so that callers using async frameworks
+        (FastAPI, aiohttp) can ``await`` ingestion without blocking the
+        event loop.
+
+        The result is identical to calling ``process()`` directly.
+        See SPEC section 18.2.
+
+        Parameters
+        ----------
+        file_path:
+            Filesystem path to the PDF file.
+        source_uri:
+            Optional override for the source URI stored in the ingest key.
+
+        Returns
+        -------
+        ProcessingResult
+            The fully-assembled result (identical to sync ``process()``).
+        """
+        return await asyncio.to_thread(self.process, file_path, source_uri)
+
     def process_batch(
         self,
         file_paths: list[str],
     ) -> list[ProcessingResult]:
-        """Process multiple PDFs with process isolation and per-document timeout.
+        """Process multiple PDFs via the configured execution backend.
 
-        Uses ``ProcessPoolExecutor`` for process isolation per SPEC section 17.2.
-        Each worker creates its own backends and router via
-        :func:`create_default_router`.
+        Uses the injected ``ExecutionBackend`` to submit and collect results.
+        With ``LocalExecutionBackend`` (default), this preserves the existing
+        ProcessPoolExecutor process-isolation behavior.
 
         Parameters
         ----------
@@ -448,48 +492,26 @@ class PDFRouter:
         if not file_paths:
             return []
 
-        results: dict[int, ProcessingResult] = {}
-        timeout = self._config.per_document_timeout_seconds
+        timeout = float(self._config.per_document_timeout_seconds)
 
-        with ProcessPoolExecutor(
-            max_workers=min(len(file_paths), 4)
-        ) as executor:
-            future_to_idx = {
-                executor.submit(
-                    _process_single_file,
-                    fp,
-                    self._config.model_dump(),
-                ): idx
-                for idx, fp in enumerate(file_paths)
-            }
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                fp = file_paths[idx]
-                try:
-                    result = future.result(timeout=timeout)
-                    results[idx] = result
-                except TimeoutError:
-                    results[idx] = self._build_error_result(
-                        file_path=fp,
-                        ingest_key="",
-                        ingest_run_id=str(uuid.uuid4()),
-                        errors=["Processing timeout"],
-                        warnings=[],
-                        error_details=[],
-                        elapsed=float(timeout),
-                    )
-                except Exception as exc:
-                    results[idx] = self._build_error_result(
-                        file_path=fp,
-                        ingest_key="",
-                        ingest_run_id=str(uuid.uuid4()),
-                        errors=[f"Processing failed: {exc}"],
-                        warnings=[],
-                        error_details=[],
-                        elapsed=0.0,
-                    )
+        # Submit all files
+        job_ids: list[str] = []
+        for fp in file_paths:
+            job_id = self._execution.submit(fp, self._config)
+            job_ids.append(job_id)
 
-        return [results[i] for i in range(len(file_paths))]
+        # For LocalExecutionBackend, trigger batch execution.
+        # Duck-typed: only LocalExecutionBackend has execute_all().
+        if hasattr(self._execution, "execute_all"):
+            self._execution.execute_all(timeout=timeout)
+
+        # Collect results in order
+        results: list[ProcessingResult] = []
+        for job_id in job_ids:
+            result = self._execution.get_result(job_id, timeout=timeout)
+            results.append(result)
+
+        return results
 
     # ------------------------------------------------------------------
     # Private methods
@@ -923,7 +945,7 @@ def create_default_router(**overrides: Any) -> PDFRouter:
     )
 
     # Separate known router kwargs from config overrides
-    router_keys = {"vector_store", "structured_db", "llm", "embedder", "config"}
+    router_keys = {"vector_store", "structured_db", "llm", "embedder", "config", "execution"}
     router_kwargs = {k: v for k, v in overrides.items() if k in router_keys}
     config_kwargs = {k: v for k, v in overrides.items() if k not in router_keys}
 
@@ -949,10 +971,13 @@ def create_default_router(**overrides: Any) -> PDFRouter:
     if embedder is None:
         embedder = OllamaEmbedding(model=config.embedding_model)
 
+    execution = router_kwargs.pop("execution", None)
+
     return PDFRouter(
         vector_store=vector_store,
         structured_db=structured_db,
         llm=llm,
         embedder=embedder,
         config=config,
+        execution=execution,
     )
