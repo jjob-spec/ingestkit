@@ -6,7 +6,14 @@ Subpackage containing extraction backends:
 - excel_cell: openpyxl cell value mapping extraction
 """
 
+from ingestkit_forms.extractors.excel_cell import ExcelCellExtractor
 from ingestkit_forms.extractors.native_pdf import NativePDFExtractor
 from ingestkit_forms.extractors.ocr_overlay import OCROverlayExtractor
+from ingestkit_forms.extractors.vlm_fallback import VLMFieldExtractor
 
-__all__ = ["NativePDFExtractor", "OCROverlayExtractor"]
+__all__ = [
+    "ExcelCellExtractor",
+    "NativePDFExtractor",
+    "OCROverlayExtractor",
+    "VLMFieldExtractor",
+]
