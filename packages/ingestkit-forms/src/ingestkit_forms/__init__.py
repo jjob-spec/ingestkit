@@ -31,6 +31,13 @@ from ingestkit_forms.protocols import (
     VLMFieldResult,
     WidgetField,
 )
+from ingestkit_forms.idempotency import (
+    compute_form_extraction_key,
+    compute_ingest_key,
+    compute_vector_point_id,
+)
+from ingestkit_forms.router import FormRouter, create_default_router
+from ingestkit_forms.security import FormSecurityScanner, regex_match_with_timeout
 from ingestkit_forms.stores import FileSystemTemplateStore
 from ingestkit_forms.models import (
     BoundingBox,
@@ -117,4 +124,14 @@ __all__: list[str] = [
     "compute_field_confidence",
     "compute_overall_confidence",
     "apply_confidence_actions",
+    # Idempotency keying (from issue #71)
+    "compute_ingest_key",
+    "compute_form_extraction_key",
+    "compute_vector_point_id",
+    # Security (from issue #70)
+    "FormSecurityScanner",
+    "regex_match_with_timeout",
+    # Router (from issue #69)
+    "FormRouter",
+    "create_default_router",
 ]
