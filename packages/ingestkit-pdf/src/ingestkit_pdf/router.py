@@ -593,13 +593,15 @@ class PDFRouter:
         font_count = len(font_names)
 
         # Tables
-        tables: Any = []
+        table_count = 0
         if hasattr(page, "find_tables"):
             try:
-                tables = page.find_tables()
+                finder = page.find_tables()
+                # PyMuPDF returns a TableFinder; access .tables for the list
+                tbl_list = getattr(finder, "tables", finder)
+                table_count = len(tbl_list) if tbl_list else 0
             except Exception:
-                tables = []
-        table_count = len(tables) if tables else 0
+                table_count = 0
 
         # Form fields
         has_form_fields = False
