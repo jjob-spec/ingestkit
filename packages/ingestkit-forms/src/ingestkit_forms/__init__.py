@@ -4,6 +4,11 @@ Public API exports for form template matching, extraction, and output.
 """
 
 from ingestkit_forms.api import FormTemplateAPI
+from ingestkit_forms.confidence import (
+    apply_confidence_actions,
+    compute_field_confidence,
+    compute_overall_confidence,
+)
 from ingestkit_forms.config import FormProcessorConfig, RedactTarget
 from ingestkit_forms.errors import FormErrorCode, FormIngestError, FormIngestException
 from ingestkit_forms.matcher import (
@@ -108,4 +113,8 @@ __all__: list[str] = [
     "LayoutFingerprinter",
     # Stores (from issue #61)
     "FileSystemTemplateStore",
+    # Confidence scoring (from issue #67)
+    "compute_field_confidence",
+    "compute_overall_confidence",
+    "apply_confidence_actions",
 ]

@@ -11,6 +11,7 @@ import logging
 import re
 from collections import defaultdict
 
+from ingestkit_forms.confidence import compute_field_confidence
 from ingestkit_forms.config import FormProcessorConfig
 from ingestkit_forms.errors import FormErrorCode
 from ingestkit_forms.models import (
@@ -99,6 +100,17 @@ class NativePDFExtractor:
             coerced_value = self._coerce_widget_value(
                 raw_value, field.field_type, best_widget.field_type
             )
+            # Detect if coercion changed the value type (string -> float/bool)
+            coercion_applied = (
+                raw_value is not None
+                and type(coerced_value) is not str
+                and not isinstance(raw_value, type(coerced_value))
+            )
+            # Base confidence: 0.99 for direct match, 0.95 if coercion needed
+            base_confidence = 0.95 if coercion_applied else 0.99
+            confidence = compute_field_confidence(
+                "native_fields", base_confidence, field.field_type, coercion_applied
+            )
             value, validation_passed, warnings = self._validate_field_value(
                 coerced_value, field
             )
@@ -109,7 +121,7 @@ class NativePDFExtractor:
                 field_type=field.field_type,
                 value=value,
                 raw_value=raw_value,
-                confidence=0.95,
+                confidence=confidence,
                 extraction_method="native_fields",
                 bounding_box=best_widget.bbox,
                 validation_passed=validation_passed,
