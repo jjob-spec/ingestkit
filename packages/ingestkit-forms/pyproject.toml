@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ingestkit-forms"
+version = "0.1.0"
+description = "Template-driven form extraction plugin for ingestkit"
+requires-python = ">=3.10"
+dependencies = [
+    "ingestkit-core>=0.1.0",
+    "pydantic>=2.0",
+    "openpyxl>=3.1",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# PDF widget extraction — choose ONE based on licensing needs
+pdf = ["PyMuPDF>=1.24"]
+pdf-mit = ["pdfplumber>=0.11", "pypdf>=4.0"]
+
+# OCR — choose ONE (or both; engine selected at runtime via config)
+ocr = [
+    "paddleocr>=2.7; platform_system != 'Darwin' or platform_machine != 'arm64'",
+]
+ocr-lite = ["pytesseract>=0.3.10"]
+
+# VLM fallback — optional, for low-confidence OCR field re-extraction
+vlm = ["httpx>=0.27"]
+
+# Full install — all extraction capabilities
+all = [
+    "ingestkit-forms[pdf,ocr,vlm]",
+]
+
+# Development
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests (no external services)",
+    "integration: Integration tests (require external services)",
+]
