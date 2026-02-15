@@ -29,6 +29,7 @@ __all__ = [
     "StructuredDBBackend",
     "EmbeddingBackend",
     # Form-specific protocols
+    "FormDBBackend",
     "FormTemplateStore",
     "LayoutFingerprinter",
     "OCRBackend",
@@ -76,6 +77,50 @@ class VLMFieldResult(BaseModel):
     model: str
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Form-Specific DB Protocol (row-level operations for form output)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class FormDBBackend(Protocol):
+    """Interface for form-specific DB operations.
+
+    Extends the capabilities beyond ``StructuredDBBackend`` (which is
+    DataFrame-oriented) with row-level operations needed by the form
+    output writer: SQL execution, column introspection, and targeted
+    row deletion for rollback.
+
+    Concrete backends (SQLite, PostgreSQL) can implement both
+    ``StructuredDBBackend`` and ``FormDBBackend`` — structural
+    subtyping makes this seamless.
+
+    Note: This intentionally lives in ingestkit-forms rather than
+    ingestkit-core because these operations are form-specific
+    (individual row upsert, schema evolution via ALTER TABLE).
+    """
+
+    def execute_sql(self, sql: str, params: tuple | None = None) -> None:
+        """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT OR REPLACE)."""
+        ...
+
+    def get_table_columns(self, table_name: str) -> list[str]:
+        """Return column names of an existing table."""
+        ...
+
+    def delete_rows(self, table_name: str, column: str, values: list[str]) -> int:
+        """Delete rows where ``column`` IN ``values``. Returns count deleted."""
+        ...
+
+    def table_exists(self, table_name: str) -> bool:
+        """Return True if the table exists in the database."""
+        ...
+
+    def get_connection_uri(self) -> str:
+        """Return the database connection URI."""
+        ...
 
 
 # ---------------------------------------------------------------------------
