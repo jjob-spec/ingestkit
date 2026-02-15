@@ -10,10 +10,10 @@ from __future__ import annotations
 import io
 import logging
 import re
-import threading
 from typing import TYPE_CHECKING
 
 from ingestkit_forms.errors import FormErrorCode, FormIngestException
+from ingestkit_forms.security import regex_match_with_timeout
 from ingestkit_forms.extractors._preprocessing import (
     compute_fill_ratio,
     compute_ink_ratio,
@@ -35,9 +35,6 @@ logger = logging.getLogger("ingestkit_forms")
 # ---------------------------------------------------------------------------
 # Private Helpers
 # ---------------------------------------------------------------------------
-
-_REGEX_TIMEOUT_SECONDS = 1.0
-
 
 def _build_ocr_config(
     field_type: FieldType,
@@ -66,34 +63,6 @@ def _build_ocr_config(
             return "rec_char_type=EN"
         return None
     return None
-
-
-def _regex_match_with_timeout(
-    pattern: str,
-    value: str,
-    timeout: float = _REGEX_TIMEOUT_SECONDS,
-) -> bool | None:
-    """Match a regex pattern with timeout protection against ReDoS.
-
-    Returns:
-        True if matches, False if no match, None if timeout.
-    """
-    result: list[bool] = []
-
-    def _match() -> None:
-        try:
-            result.append(bool(re.match(pattern, value)))
-        except re.error:
-            result.append(False)
-
-    thread = threading.Thread(target=_match, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
-
-    if not result:
-        # Timeout occurred
-        return None
-    return result[0]
 
 
 def _crop_field_region(
@@ -297,7 +266,9 @@ class OCROverlayExtractor:
         # Apply validation pattern (spec section 7.2 step 3)
         validation_passed: bool | None = None
         if field.validation_pattern and value is not None and isinstance(value, str):
-            match_result = _regex_match_with_timeout(field.validation_pattern, value)
+            match_result = regex_match_with_timeout(
+                field.validation_pattern, value, match_mode="match"
+            )
             if match_result is None:
                 # Regex timed out (ReDoS protection)
                 warnings.append(FormErrorCode.W_FORM_FIELD_VALIDATION_FAILED.value)

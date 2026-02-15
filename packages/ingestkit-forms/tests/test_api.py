@@ -13,6 +13,7 @@ from ingestkit_forms.models import (
     FormTemplateCreateRequest,
     FormTemplateUpdateRequest,
     SourceFormat,
+    TemplateMatch,
 )
 
 
@@ -277,3 +278,140 @@ class TestListTemplateVersions:
         with pytest.raises(FormIngestException) as exc_info:
             template_api.list_template_versions("nonexistent")
         assert exc_info.value.code == FormErrorCode.E_FORM_TEMPLATE_NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# New API methods (issue #69)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMatchDocument:
+    """Tests for FormTemplateAPI.match_document."""
+
+    def test_match_document_delegates_to_matcher(
+        self, mock_template_store, form_config
+    ):
+        """match_document delegates to the injected FormMatcher."""
+        from unittest.mock import MagicMock
+
+        mock_matcher = MagicMock()
+        mock_matcher.match_document.return_value = [
+            TemplateMatch(
+                template_id="t1",
+                template_name="Form A",
+                template_version=1,
+                confidence=0.9,
+                per_page_confidence=[0.9],
+                matched_features=["layout_grid"],
+            )
+        ]
+
+        api = FormTemplateAPI(
+            store=mock_template_store,
+            config=form_config,
+            matcher=mock_matcher,
+        )
+        results = api.match_document("/tmp/form.pdf")
+        assert len(results) == 1
+        assert results[0].template_id == "t1"
+        mock_matcher.match_document.assert_called_once_with("/tmp/form.pdf")
+
+    def test_match_document_raises_without_matcher(
+        self, mock_template_store, form_config
+    ):
+        """Calling match_document without matcher raises FormIngestException."""
+        api = FormTemplateAPI(store=mock_template_store, config=form_config)
+        with pytest.raises(FormIngestException):
+            api.match_document("/tmp/form.pdf")
+
+
+@pytest.mark.unit
+class TestExtractForm:
+    """Tests for FormTemplateAPI.extract_form."""
+
+    def test_extract_form_delegates_to_router(
+        self, mock_template_store, form_config
+    ):
+        """extract_form delegates to the injected FormRouter."""
+        from unittest.mock import MagicMock
+
+        from ingestkit_forms.models import FormIngestRequest
+
+        mock_router = MagicMock()
+        mock_router.extract_form.return_value = MagicMock()
+
+        api = FormTemplateAPI(
+            store=mock_template_store,
+            config=form_config,
+            router=mock_router,
+        )
+        request = FormIngestRequest(
+            file_path="/tmp/form.xlsx", template_id="t1"
+        )
+        result = api.extract_form(request)
+        assert result is not None
+        mock_router.extract_form.assert_called_once_with(request)
+
+    def test_extract_form_raises_without_router(
+        self, mock_template_store, form_config
+    ):
+        """Calling extract_form without router raises FormIngestException."""
+        from ingestkit_forms.models import FormIngestRequest
+
+        api = FormTemplateAPI(store=mock_template_store, config=form_config)
+        request = FormIngestRequest(
+            file_path="/tmp/form.xlsx", template_id="t1"
+        )
+        with pytest.raises(FormIngestException):
+            api.extract_form(request)
+
+
+@pytest.mark.unit
+class TestRenderDocument:
+    """Tests for FormTemplateAPI.render_document."""
+
+    def test_render_document_returns_png_bytes(
+        self, mock_template_store, form_config, tmp_path
+    ):
+        """render_document returns PNG bytes for an image file."""
+        import os
+        import random
+
+        from PIL import Image
+
+        # Create a small noisy image -- random pixel data compresses poorly,
+        # which keeps the decompression ratio below the safety limit (100x).
+        random.seed(42)
+        width, height = 100, 100
+        pixels = bytes(random.randint(0, 255) for _ in range(width * height * 3))
+        img = Image.frombytes("RGB", (width, height), pixels)
+        img_path = tmp_path / "render_test.png"
+        img.save(str(img_path))
+
+        # Sanity check: compressed size should be a good fraction of decompressed
+        compressed = os.path.getsize(str(img_path))
+        decompressed = width * height * 3
+        assert decompressed / compressed < 100, (
+            f"ratio {decompressed / compressed:.1f} still too high"
+        )
+
+        api = FormTemplateAPI(store=mock_template_store, config=form_config)
+        png_bytes = api.render_document(str(img_path), page=0, dpi=150)
+        assert isinstance(png_bytes, bytes)
+        assert len(png_bytes) > 0
+        # PNG magic bytes
+        assert png_bytes[:4] == b"\x89PNG"
+
+
+@pytest.mark.unit
+class TestPreviewExtraction:
+    """Tests for FormTemplateAPI.preview_extraction."""
+
+    def test_preview_extraction_raises_without_router(
+        self, mock_template_store, form_config
+    ):
+        """Calling preview_extraction without router raises FormIngestException."""
+        api = FormTemplateAPI(store=mock_template_store, config=form_config)
+        with pytest.raises(FormIngestException):
+            api.preview_extraction("/tmp/form.xlsx", "tmpl-1")
