@@ -36,6 +36,7 @@ from ingestkit_forms.extractors.ocr_overlay import (
 from ingestkit_forms.models import (
     BoundingBox,
     CellAddress,
+    ExtractedField,
     FieldMapping,
     FieldType,
     FormTemplate,
@@ -180,7 +181,7 @@ def test_extract_text_field_exact_match(form_config):
 
     assert len(results) == 1
     assert results[0].value == "John Doe"
-    assert results[0].confidence == 0.95
+    assert results[0].confidence == 0.99  # native_fields, no coercion -> 0.99
     assert results[0].extraction_method == "native_fields"
     assert results[0].field_name == "employee_name"
 
@@ -204,7 +205,7 @@ def test_extract_text_field_iou_above_threshold(form_config):
     results = extractor.extract("/fake/form.pdf", template)
 
     assert results[0].value == "Jane Smith"
-    assert results[0].confidence == 0.95
+    assert results[0].confidence == 0.99  # native_fields, no coercion -> 0.99
 
 
 # ---------------------------------------------------------------------------
@@ -1510,3 +1511,930 @@ class TestOCRHelperFunctions:
         """Input '$ 1,234.56 USD' -> '1,234.56'."""
         result = _post_process_value("$ 1,234.56 USD", FieldType.NUMBER)
         assert result == "1,234.56"
+
+
+# ===========================================================================
+# Excel Cell Extraction Tests (issue #65)
+# ===========================================================================
+
+from datetime import datetime
+from typing import Any
+
+from ingestkit_forms.extractors.excel_cell import ExcelCellExtractor
+
+
+# ---------------------------------------------------------------------------
+# Excel cell test helpers
+# ---------------------------------------------------------------------------
+
+
+def _excel_field(
+    field_name: str = "employee_name",
+    field_label: str = "Employee Name",
+    field_type: FieldType = FieldType.TEXT,
+    cell: str = "B2",
+    sheet_name: str | None = None,
+    validation_pattern: str | None = None,
+    required: bool = False,
+    default_value: str | None = None,
+    options: list[str] | None = None,
+) -> FieldMapping:
+    """Factory for FieldMapping with cell_address (Excel fields)."""
+    return FieldMapping(
+        field_name=field_name,
+        field_label=field_label,
+        field_type=field_type,
+        page_number=0,
+        cell_address=CellAddress(cell=cell, sheet_name=sheet_name),
+        validation_pattern=validation_pattern,
+        required=required,
+        default_value=default_value,
+        options=options,
+    )
+
+
+def _excel_template(
+    fields: list[FieldMapping] | None = None,
+    name: str = "Excel Test Template",
+) -> FormTemplate:
+    """Factory for FormTemplate with Excel fields."""
+    if fields is None:
+        fields = [_excel_field()]
+    return FormTemplate(
+        name=name,
+        source_format=SourceFormat.XLSX,
+        page_count=1,
+        fields=fields,
+    )
+
+
+def _mock_cell(value: Any = None) -> MagicMock:
+    """Create a mock openpyxl cell with a value."""
+    cell_mock = MagicMock()
+    cell_mock.value = value
+    return cell_mock
+
+
+def _mock_worksheet(
+    cells: dict[str, Any] | None = None,
+    merged_ranges: list | None = None,
+    range_data: dict[str, list[list[Any]]] | None = None,
+) -> MagicMock:
+    """Create a mock openpyxl worksheet.
+
+    Args:
+        cells: Mapping of cell address -> value, e.g. {"B2": "John Doe"}.
+        merged_ranges: List of mock MergedCellRange objects.
+        range_data: Mapping of range string -> list of rows of values.
+
+    Note: MagicMock dunder methods pass ``self`` as first arg.
+    """
+    ws = MagicMock()
+
+    if cells:
+        def getitem(_self, key):
+            if key in (range_data or {}):
+                rows = range_data[key]
+                result = []
+                for row_vals in rows:
+                    row_cells = []
+                    for val in row_vals:
+                        row_cells.append(_mock_cell(val))
+                    result.append(tuple(row_cells))
+                return tuple(result)
+            mock_c = _mock_cell(cells.get(key))
+            return mock_c
+        ws.__getitem__ = getitem
+    elif range_data:
+        def getitem(_self, key):
+            if key in range_data:
+                rows = range_data[key]
+                result = []
+                for row_vals in rows:
+                    row_cells = []
+                    for val in row_vals:
+                        row_cells.append(_mock_cell(val))
+                    result.append(tuple(row_cells))
+                return tuple(result)
+            return _mock_cell(None)
+        ws.__getitem__ = getitem
+    else:
+        ws.__getitem__ = lambda _self, key: _mock_cell(None)
+
+    ws.merged_cells = MagicMock()
+    ws.merged_cells.ranges = merged_ranges or []
+
+    return ws
+
+
+def _mock_workbook(
+    sheets: dict[str, MagicMock] | None = None,
+    active_sheet: MagicMock | None = None,
+) -> MagicMock:
+    """Create a mock openpyxl workbook."""
+    wb = MagicMock()
+    sheets = sheets or {}
+
+    def getitem(_self, key):
+        if key in sheets:
+            return sheets[key]
+        raise KeyError(key)
+
+    wb.__getitem__ = getitem
+    wb.active = active_sheet or (next(iter(sheets.values())) if sheets else MagicMock())
+    return wb
+
+
+# ---------------------------------------------------------------------------
+# Excel Cell Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_excel_extract_text_field_single_cell(form_config):
+    """Single cell 'B2' with text -> ExtractedField with value, confidence=0.95."""
+    ws = _mock_worksheet(cells={"B2": "John Doe"})
+    wb = _mock_workbook(sheets={"Sheet1": ws}, active_sheet=ws)
+
+    fld = _excel_field(cell="B2")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert len(results) == 1
+    assert results[0].value == "John Doe"
+    assert results[0].confidence == 0.95
+    assert results[0].extraction_method == "cell_mapping"
+    assert results[0].field_name == "employee_name"
+
+
+@pytest.mark.unit
+def test_excel_extract_number_field_coercion(form_config):
+    """Cell contains numeric value -> coerced to float."""
+    ws = _mock_worksheet(cells={"C3": 42.5})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="salary", field_type=FieldType.NUMBER, cell="C3")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == 42.5
+    assert isinstance(results[0].value, float)
+    assert results[0].confidence == 0.95
+
+
+@pytest.mark.unit
+def test_excel_extract_number_field_coercion_failure(form_config):
+    """Cell contains 'abc' for NUMBER -> value=None, W_FORM_FIELD_TYPE_COERCION."""
+    ws = _mock_worksheet(cells={"C3": "abc"})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="amount", field_type=FieldType.NUMBER, cell="C3")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value is None
+    assert FormErrorCode.W_FORM_FIELD_TYPE_COERCION.value in results[0].warnings
+
+
+@pytest.mark.unit
+def test_excel_extract_date_field(form_config):
+    """Cell contains datetime object -> returned as ISO string."""
+    dt = datetime(2026, 2, 15, 0, 0, 0)
+    ws = _mock_worksheet(cells={"D4": dt})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="hire_date", field_type=FieldType.DATE, cell="D4")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == "2026-02-15T00:00:00"
+    assert results[0].confidence == 0.95
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("input_val", ["X", "x", "Yes", "TRUE", 1, True])
+def test_excel_extract_checkbox_true_values(form_config, input_val):
+    """Various truthy values -> True for CHECKBOX."""
+    ws = _mock_worksheet(cells={"E5": input_val})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="agree", field_type=FieldType.CHECKBOX, cell="E5")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("input_val", ["No", "FALSE", 0, False])
+def test_excel_extract_checkbox_false_values(form_config, input_val):
+    """Various falsy values -> False for CHECKBOX."""
+    ws = _mock_worksheet(cells={"E5": input_val})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="agree", field_type=FieldType.CHECKBOX, cell="E5")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value is False
+
+
+@pytest.mark.unit
+def test_excel_extract_cell_range(form_config):
+    """Range 'D5:D7' with values -> joined with newline."""
+    ws = _mock_worksheet(
+        range_data={"D5:D7": [["Line 1"], ["Line 2"], ["Line 3"]]},
+    )
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="notes", cell="D5:D7")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == "Line 1\nLine 2\nLine 3"
+    assert results[0].confidence == 0.95
+
+
+@pytest.mark.unit
+def test_excel_extract_cell_range_skips_empty(form_config):
+    """Range with some empty cells -> only non-empty joined."""
+    ws = _mock_worksheet(
+        range_data={"D5:D7": [["First"], [None], ["Third"]]},
+    )
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="notes", cell="D5:D7")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == "First\nThird"
+
+
+@pytest.mark.unit
+def test_excel_merged_cell_resolution(form_config):
+    """Cell in merged range -> reads top-left, emits W_FORM_MERGED_CELL_RESOLVED."""
+    ws = MagicMock()
+
+    merged_range = MagicMock()
+    merged_range.__contains__ = lambda self, item: item == "B3"
+    merged_range.min_row = 2
+    merged_range.min_col = 2
+
+    ws.merged_cells = MagicMock()
+    ws.merged_cells.ranges = [merged_range]
+
+    top_left_cell = _mock_cell("Merged Value")
+    ws.cell.return_value = top_left_cell
+
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="dept", cell="B3")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == "Merged Value"
+    assert FormErrorCode.W_FORM_MERGED_CELL_RESOLVED.value in results[0].warnings
+
+
+@pytest.mark.unit
+def test_excel_empty_required_field(form_config):
+    """Empty cell + required=True -> confidence=0.0, W_FORM_FIELD_MISSING_REQUIRED."""
+    ws = _mock_worksheet(cells={"B2": None})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(field_name="ssn", required=True, cell="B2")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value is None
+    assert results[0].confidence == 0.0
+    assert FormErrorCode.W_FORM_FIELD_MISSING_REQUIRED.value in results[0].warnings
+
+
+@pytest.mark.unit
+def test_excel_empty_optional_field(form_config):
+    """Empty cell + required=False + default_value -> confidence=0.95, value=default."""
+    ws = _mock_worksheet(cells={"B2": None})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(
+        field_name="dept", required=False, default_value="General", cell="B2"
+    )
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == "General"
+    assert results[0].confidence == 0.95
+
+
+@pytest.mark.unit
+def test_excel_validation_pattern_pass(form_config):
+    """Value matches regex -> validation_passed=True."""
+    ws = _mock_worksheet(cells={"B2": "123-45-6789"})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(
+        field_name="ssn",
+        cell="B2",
+        validation_pattern=r"\d{3}-\d{2}-\d{4}",
+    )
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].validation_passed is True
+    assert results[0].value == "123-45-6789"
+
+
+@pytest.mark.unit
+def test_excel_validation_pattern_fail(form_config):
+    """Value fails regex -> validation_passed=False, W_FORM_FIELD_VALIDATION_FAILED."""
+    ws = _mock_worksheet(cells={"B2": "not-valid"})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fld = _excel_field(
+        field_name="ssn",
+        cell="B2",
+        validation_pattern=r"\d{3}-\d{2}-\d{4}",
+    )
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].validation_passed is False
+    assert FormErrorCode.W_FORM_FIELD_VALIDATION_FAILED.value in results[0].warnings
+
+
+@pytest.mark.unit
+def test_excel_sheet_name_resolution(form_config):
+    """Field with explicit sheet_name -> reads from that sheet."""
+    ws_data = _mock_worksheet(cells={"A1": "From Data Sheet"})
+    ws_other = _mock_worksheet(cells={"A1": "Wrong Sheet"})
+    wb = _mock_workbook(
+        sheets={"Data": ws_data, "Other": ws_other},
+        active_sheet=ws_other,
+    )
+
+    fld = _excel_field(field_name="info", cell="A1", sheet_name="Data")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value == "From Data Sheet"
+
+
+@pytest.mark.unit
+def test_excel_sheet_name_not_found(form_config):
+    """Invalid sheet_name -> value=None, confidence=0.0, warning."""
+    ws = _mock_worksheet(cells={"A1": "Some Value"})
+    wb = _mock_workbook(sheets={"Sheet1": ws}, active_sheet=ws)
+
+    fld = _excel_field(field_name="info", cell="A1", sheet_name="NonExistent")
+    template = _excel_template(fields=[fld])
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert results[0].value is None
+    assert results[0].confidence == 0.0
+    assert any(
+        FormErrorCode.E_FORM_EXTRACTION_FAILED.value in w for w in results[0].warnings
+    )
+
+
+@pytest.mark.unit
+def test_excel_multiple_fields_extraction(form_config):
+    """Template with 3 fields -> all extracted in order."""
+    ws = _mock_worksheet(cells={"B2": "John", "C3": "Engineering", "D4": "42"})
+    wb = _mock_workbook(active_sheet=ws)
+
+    fields = [
+        _excel_field(field_name="name", cell="B2"),
+        _excel_field(field_name="dept", cell="C3"),
+        _excel_field(field_name="age", field_type=FieldType.NUMBER, cell="D4"),
+    ]
+    template = _excel_template(fields=fields)
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert len(results) == 3
+    assert results[0].field_name == "name"
+    assert results[0].value == "John"
+    assert results[1].field_name == "dept"
+    assert results[1].value == "Engineering"
+    assert results[2].field_name == "age"
+    assert results[2].value == 42.0
+
+
+@pytest.mark.unit
+def test_excel_skips_pdf_fields(form_config):
+    """Template mixing cell_address and region fields -> only cell_address processed."""
+    ws = _mock_worksheet(cells={"B2": "Excel Value"})
+    wb = _mock_workbook(active_sheet=ws)
+
+    excel_fld = _excel_field(field_name="excel_field", cell="B2")
+    pdf_fld = _field(field_name="pdf_field")  # region-based, no cell_address
+
+    template = FormTemplate(
+        name="Mixed Template",
+        source_format=SourceFormat.XLSX,
+        page_count=1,
+        fields=[excel_fld, pdf_fld],
+    )
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.return_value = wb
+        results = extractor.extract("/fake/form.xlsx", template)
+
+    assert len(results) == 1
+    assert results[0].field_name == "excel_field"
+    assert results[0].value == "Excel Value"
+
+
+@pytest.mark.unit
+def test_excel_corrupt_workbook_raises_exception(form_config):
+    """Corrupt workbook -> FormIngestException with E_FORM_FILE_CORRUPT."""
+    template = _excel_template()
+    extractor = ExcelCellExtractor(config=form_config)
+
+    with patch("ingestkit_forms.extractors.excel_cell.openpyxl") as mock_openpyxl:
+        mock_openpyxl.load_workbook.side_effect = Exception("File is corrupt")
+        with pytest.raises(FormIngestException) as exc_info:
+            extractor.extract("/fake/corrupt.xlsx", template)
+
+    assert exc_info.value.code == FormErrorCode.E_FORM_FILE_CORRUPT
+
+
+@pytest.mark.unit
+def test_excel_validation_redos_protection():
+    """ReDoS pattern with pathological input -> timeout or no match."""
+    from ingestkit_forms.extractors.excel_cell import _regex_match_with_timeout
+
+    result = _regex_match_with_timeout(
+        r"(a+)+$",
+        "a" * 25 + "!",
+        timeout=1.0,
+    )
+    # Either times out (None) or fails to match (False)
+    assert result is None or result is False
+
+
+# ===========================================================================
+# VLM Fallback Extraction Tests (issue #66)
+# ===========================================================================
+
+
+from ingestkit_forms.extractors.vlm_fallback import (
+    VLMFieldExtractor,
+    _crop_field_region_with_padding,
+)
+from ingestkit_forms.protocols import VLMFieldResult
+
+from tests.conftest import MockVLMBackend
+
+
+# ---------------------------------------------------------------------------
+# VLM test helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_vlm_extracted_field(
+    field_id: str = "f1",
+    field_name: str = "employee_name",
+    field_label: str = "Employee Name",
+    field_type: FieldType = FieldType.TEXT,
+    value: str | bool | None = "OCR Value",
+    confidence: float = 0.3,
+    extraction_method: str = "ocr_overlay",
+    page_number: int = 0,
+    x: float = 0.1,
+    y: float = 0.1,
+    width: float = 0.3,
+    height: float = 0.05,
+    warnings: list[str] | None = None,
+) -> ExtractedField:
+    return ExtractedField(
+        field_id=field_id,
+        field_name=field_name,
+        field_label=field_label,
+        field_type=field_type,
+        value=value,
+        confidence=confidence,
+        extraction_method=extraction_method,
+        bounding_box=BoundingBox(x=x, y=y, width=width, height=height),
+        warnings=warnings if warnings is not None else [],
+    )
+
+
+def _make_vlm_template(field_mappings: list[FieldMapping]) -> FormTemplate:
+    """Create a template with the given field mappings."""
+    return FormTemplate(
+        name="VLM Test Template",
+        source_format=SourceFormat.PDF,
+        page_count=1,
+        fields=field_mappings,
+    )
+
+
+def _make_vlm_field_mapping(
+    field_id: str = "f1",
+    field_name: str = "employee_name",
+    field_label: str = "Employee Name",
+    field_type: FieldType = FieldType.TEXT,
+    page_number: int = 0,
+    required: bool = False,
+    extraction_hint: str | None = None,
+    x: float = 0.1,
+    y: float = 0.1,
+    width: float = 0.3,
+    height: float = 0.05,
+) -> FieldMapping:
+    return FieldMapping(
+        field_id=field_id,
+        field_name=field_name,
+        field_label=field_label,
+        field_type=field_type,
+        page_number=page_number,
+        region=BoundingBox(x=x, y=y, width=width, height=height),
+        required=required,
+        extraction_hint=extraction_hint,
+    )
+
+
+# ---------------------------------------------------------------------------
+# VLM Fallback Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestVLMFallback:
+    """Tests for VLMFieldExtractor.apply_vlm_fallback()."""
+
+    def test_vlm_fallback_disabled(self, form_config):
+        """When form_vlm_enabled=False, fields returned unchanged, no VLM calls."""
+        backend = MockVLMBackend()
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(field_id="f1", confidence=0.2)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=form_config)
+        result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert len(result) == 1
+        assert result[0].value == "OCR Value"
+        assert result[0].confidence == 0.2
+        assert backend.call_count == 0
+        assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value not in result[0].warnings
+
+    def test_vlm_fallback_no_low_confidence_fields(self, vlm_enabled_config):
+        """All fields above threshold -> no VLM calls."""
+        backend = MockVLMBackend()
+        m1 = _make_vlm_field_mapping(field_id="f1", field_name="name")
+        m2 = _make_vlm_field_mapping(field_id="f2", field_name="dept")
+        template = _make_vlm_template([m1, m2])
+
+        f1 = _make_vlm_extracted_field(field_id="f1", field_name="name", confidence=0.85)
+        f2 = _make_vlm_extracted_field(field_id="f2", field_name="dept", confidence=0.92)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        result = extractor.apply_vlm_fallback([f1, f2], template, "/fake/form.pdf")
+
+        assert len(result) == 2
+        assert result[0].confidence == 0.85
+        assert result[1].confidence == 0.92
+        assert backend.call_count == 0
+
+    def test_vlm_fallback_improves_field(self, vlm_enabled_config):
+        """Low-confidence OCR field replaced when VLM returns high confidence."""
+        backend = MockVLMBackend(default_value="VLM Value", default_confidence=0.85)
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(field_id="f1", confidence=0.2)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert result[0].value == "VLM Value"
+        assert result[0].confidence == 0.85
+        assert result[0].extraction_method == "vlm_fallback"
+        assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value in result[0].warnings
+        assert backend.call_count == 1
+
+    def test_vlm_fallback_no_improvement(self, vlm_enabled_config):
+        """VLM confidence below min threshold -> original OCR result retained."""
+        backend = MockVLMBackend(default_value="Bad VLM", default_confidence=0.35)
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(field_id="f1", confidence=0.2)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert result[0].value == "OCR Value"
+        assert result[0].confidence == 0.2
+        assert result[0].extraction_method == "ocr_overlay"
+        assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value in result[0].warnings
+
+    def test_vlm_fallback_budget_exhausted(self, vlm_enabled_config):
+        """More fields than budget -> overflow fields get W_FORM_VLM_BUDGET_EXHAUSTED."""
+        vlm_enabled_config = FormProcessorConfig(
+            form_vlm_enabled=True,
+            form_vlm_fallback_threshold=0.4,
+            form_vlm_max_fields_per_document=3,
+            form_vlm_timeout_seconds=15,
+        )
+        backend = MockVLMBackend(default_value="VLM", default_confidence=0.85)
+
+        mappings = []
+        fields = []
+        for i in range(5):
+            fid = f"f{i}"
+            m = _make_vlm_field_mapping(field_id=fid, field_name=f"field_{i}")
+            mappings.append(m)
+            f = _make_vlm_extracted_field(
+                field_id=fid, field_name=f"field_{i}", confidence=0.2
+            )
+            fields.append(f)
+
+        template = _make_vlm_template(mappings)
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback(fields, template, "/fake/form.pdf")
+
+        assert backend.call_count == 3
+
+        # Count fields updated by VLM vs budget-exhausted
+        vlm_updated = [r for r in result if r.extraction_method == "vlm_fallback"]
+        budget_exhausted = [
+            r
+            for r in result
+            if FormErrorCode.W_FORM_VLM_BUDGET_EXHAUSTED.value in r.warnings
+        ]
+        assert len(vlm_updated) == 3
+        assert len(budget_exhausted) == 2
+
+        # VLM-processed fields have the fallback warning
+        for r in vlm_updated:
+            assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value in r.warnings
+
+    def test_vlm_fallback_priority_required_first(self, vlm_enabled_config):
+        """Required fields processed before optional, lowest confidence first."""
+        vlm_enabled_config = FormProcessorConfig(
+            form_vlm_enabled=True,
+            form_vlm_fallback_threshold=0.4,
+            form_vlm_max_fields_per_document=2,
+            form_vlm_timeout_seconds=15,
+        )
+        backend = MockVLMBackend(default_value="VLM", default_confidence=0.85)
+
+        # Field A: optional, conf 0.1
+        ma = _make_vlm_field_mapping(field_id="fA", field_name="field_a", required=False)
+        fa = _make_vlm_extracted_field(field_id="fA", field_name="field_a", confidence=0.1)
+
+        # Field B: required, conf 0.3
+        mb = _make_vlm_field_mapping(field_id="fB", field_name="field_b", required=True)
+        fb = _make_vlm_extracted_field(field_id="fB", field_name="field_b", confidence=0.3)
+
+        # Field C: required, conf 0.15
+        mc = _make_vlm_field_mapping(field_id="fC", field_name="field_c", required=True)
+        fc = _make_vlm_extracted_field(field_id="fC", field_name="field_c", confidence=0.15)
+
+        # Field D: optional, conf 0.05
+        md = _make_vlm_field_mapping(field_id="fD", field_name="field_d", required=False)
+        fd = _make_vlm_extracted_field(field_id="fD", field_name="field_d", confidence=0.05)
+
+        template = _make_vlm_template([ma, mb, mc, md])
+        fields = [fa, fb, fc, fd]
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback(fields, template, "/fake/form.pdf")
+
+        assert backend.call_count == 2
+        # First call: field C (required, lowest conf 0.15)
+        assert backend.call_args[0]["field_name"] == "field_c"
+        # Second call: field B (required, conf 0.3)
+        assert backend.call_args[1]["field_name"] == "field_b"
+
+        # Fields A and D get budget exhausted
+        result_a = result[0]  # field_a at index 0
+        result_d = result[3]  # field_d at index 3
+        assert FormErrorCode.W_FORM_VLM_BUDGET_EXHAUSTED.value in result_a.warnings
+        assert FormErrorCode.W_FORM_VLM_BUDGET_EXHAUSTED.value in result_d.warnings
+
+    def test_vlm_fallback_timeout_graceful(self, vlm_enabled_config, caplog):
+        """On VLM TimeoutError, original OCR result retained."""
+        backend = MockVLMBackend(raise_timeout=True)
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(field_id="f1", confidence=0.2)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with (
+            patch(
+                "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+                return_value=img,
+            ),
+            caplog.at_level(logging.WARNING, logger="ingestkit_forms"),
+        ):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert result[0].value == "OCR Value"
+        assert result[0].confidence == 0.2
+        assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value in result[0].warnings
+        assert FormErrorCode.E_FORM_VLM_TIMEOUT.value in caplog.text
+
+    def test_vlm_fallback_error_graceful(self, vlm_enabled_config):
+        """On VLM generic exception, original OCR result retained."""
+        backend = MockVLMBackend(raise_error=True)
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(field_id="f1", confidence=0.2)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert result[0].value == "OCR Value"
+        assert result[0].confidence == 0.2
+        assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value in result[0].warnings
+
+    def test_vlm_fallback_unavailable(self, vlm_enabled_config, caplog):
+        """When is_available() returns False, all fields returned unchanged."""
+        backend = MockVLMBackend(available=False)
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(field_id="f1", confidence=0.2)
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+
+        with caplog.at_level(logging.WARNING, logger="ingestkit_forms"):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert result[0].value == "OCR Value"
+        assert result[0].confidence == 0.2
+        assert backend.call_count == 0
+        assert "VLM backend unavailable" in caplog.text
+
+    def test_vlm_fallback_checkbox_field(self, vlm_enabled_config):
+        """Checkbox field with low confidence correctly handled by VLM returning bool."""
+        backend = MockVLMBackend(default_value=True, default_confidence=0.90)
+        mapping = _make_vlm_field_mapping(
+            field_id="f1",
+            field_name="agree",
+            field_label="I Agree",
+            field_type=FieldType.CHECKBOX,
+        )
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(
+            field_id="f1",
+            field_name="agree",
+            field_label="I Agree",
+            field_type=FieldType.CHECKBOX,
+            value=False,
+            confidence=0.15,
+        )
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert result[0].value is True
+        assert result[0].confidence == 0.90
+        assert result[0].extraction_method == "vlm_fallback"
+
+    def test_vlm_fallback_warnings_appended(self, vlm_enabled_config):
+        """W_FORM_VLM_FALLBACK_USED appended to existing warnings, not replacing."""
+        backend = MockVLMBackend(default_value="VLM", default_confidence=0.85)
+        mapping = _make_vlm_field_mapping(field_id="f1")
+        template = _make_vlm_template([mapping])
+        field = _make_vlm_extracted_field(
+            field_id="f1",
+            confidence=0.2,
+            warnings=[FormErrorCode.W_FORM_FIELD_LOW_CONFIDENCE.value],
+        )
+
+        extractor = VLMFieldExtractor(vlm_backend=backend, config=vlm_enabled_config)
+        img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+
+        with patch(
+            "ingestkit_forms.extractors.vlm_fallback.get_page_image",
+            return_value=img,
+        ):
+            result = extractor.apply_vlm_fallback([field], template, "/fake/form.pdf")
+
+        assert FormErrorCode.W_FORM_FIELD_LOW_CONFIDENCE.value in result[0].warnings
+        assert FormErrorCode.W_FORM_VLM_FALLBACK_USED.value in result[0].warnings
+
+    def test_crop_with_padding(self):
+        """Verify 10% padding applied correctly to crop coordinates."""
+        img = Image.new("RGB", (1000, 1000), color=(255, 255, 255))
+        region = BoundingBox(x=0.2, y=0.3, width=0.4, height=0.2)
+        # Pixel: x=200, y=300, w=400, h=200
+        # Padding: pad_x=40, pad_y=20
+        # Crop: (160, 280, 640, 520) -> size (480, 240)
+        cropped = _crop_field_region_with_padding(img, region)
+        assert cropped.size == (480, 240)
+
+    def test_crop_with_padding_edge(self):
+        """Padding at image edge clamped to bounds."""
+        img = Image.new("RGB", (1000, 1000), color=(255, 255, 255))
+        region = BoundingBox(x=0.0, y=0.0, width=0.1, height=0.1)
+        # Pixel: x=0, y=0, w=100, h=100
+        # Padding: pad_x=10, pad_y=10
+        # Crop: (max(0,-10)=0, max(0,-10)=0, min(1000,110)=110, min(1000,110)=110)
+        cropped = _crop_field_region_with_padding(img, region)
+        assert cropped.size == (110, 110)
