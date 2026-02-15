@@ -1090,26 +1090,16 @@ class TestProcessBatch:
         self, pdf_router: PDFRouter,
     ) -> None:
         """Results must match input file order."""
-        # Create mock futures that return results
-        future_a = MagicMock()
-        future_a.result.return_value = _make_processing_result(file_path="/tmp/a.pdf")
-        future_b = MagicMock()
-        future_b.result.return_value = _make_processing_result(file_path="/tmp/b.pdf")
+        result_a = _make_processing_result(file_path="/tmp/a.pdf")
+        result_b = _make_processing_result(file_path="/tmp/b.pdf")
 
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        # submit returns futures in order
-        mock_executor.submit.side_effect = [future_a, future_b]
+        # Mock the execution backend to return results in order
+        mock_backend = MagicMock()
+        mock_backend.submit.side_effect = ["job-a", "job-b"]
+        mock_backend.get_result.side_effect = [result_a, result_b]
+        pdf_router._execution = mock_backend
 
-        with patch(
-            "ingestkit_pdf.router.ProcessPoolExecutor",
-            return_value=mock_executor,
-        ), patch(
-            "ingestkit_pdf.router.as_completed",
-            return_value=[future_a, future_b],
-        ):
-            batch_results = pdf_router.process_batch(["/tmp/a.pdf", "/tmp/b.pdf"])
+        batch_results = pdf_router.process_batch(["/tmp/a.pdf", "/tmp/b.pdf"])
 
         assert len(batch_results) == 2
         assert batch_results[0].file_path == "/tmp/a.pdf"
@@ -1118,31 +1108,96 @@ class TestProcessBatch:
     def test_timeout_produces_error_result(
         self, pdf_router: PDFRouter,
     ) -> None:
-        """Timed-out document should produce error result."""
+        """Timed-out document should produce error result via execution backend."""
         pdf_router._config = pdf_router._config.model_copy(
             update={"per_document_timeout_seconds": 1}
         )
 
-        # Create a mock future that raises TimeoutError
-        mock_future = MagicMock()
-        mock_future.result.side_effect = TimeoutError("timeout")
+        # Mock execution backend: submit succeeds, execute_all produces
+        # an error result with E_EXECUTION_TIMEOUT
+        timeout_result = _make_processing_result(file_path="/tmp/slow.pdf")
+        timeout_result = timeout_result.model_copy(
+            update={"errors": [ErrorCode.E_EXECUTION_TIMEOUT.value]}
+        )
 
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        mock_executor.submit.return_value = mock_future
+        mock_backend = MagicMock()
+        mock_backend.submit.return_value = "job-timeout"
+        mock_backend.get_result.return_value = timeout_result
+        pdf_router._execution = mock_backend
 
-        with patch(
-            "ingestkit_pdf.router.ProcessPoolExecutor",
-            return_value=mock_executor,
-        ), patch(
-            "ingestkit_pdf.router.as_completed",
-            return_value=[mock_future],
-        ):
-            batch_results = pdf_router.process_batch(["/tmp/slow.pdf"])
+        batch_results = pdf_router.process_batch(["/tmp/slow.pdf"])
 
         assert len(batch_results) == 1
-        assert "Processing timeout" in batch_results[0].errors
+        assert ErrorCode.E_EXECUTION_TIMEOUT.value in batch_results[0].errors
+
+
+# ---------------------------------------------------------------------------
+# TestAprocess
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestAprocess:
+    """Tests for the async aprocess() wrapper (SPEC 18.2, R-EXE-1)."""
+
+    @pytest.mark.asyncio
+    async def test_aprocess_returns_processing_result(
+        self, pdf_router: PDFRouter,
+    ) -> None:
+        """aprocess() should return a ProcessingResult."""
+        expected_result = _make_processing_result()
+
+        with patch.object(
+            pdf_router, "process",
+            return_value=expected_result,
+        ):
+            result = await pdf_router.aprocess("/tmp/test.pdf")
+
+        assert isinstance(result, ProcessingResult)
+        assert result.chunks_created == 5
+
+    @pytest.mark.asyncio
+    async def test_aprocess_matches_process(
+        self, pdf_router: PDFRouter,
+    ) -> None:
+        """aprocess() delegates to process() and returns identical result (R-EXE-1)."""
+        expected_result = _make_processing_result()
+
+        with patch.object(
+            pdf_router, "process",
+            return_value=expected_result,
+        ) as process_mock:
+            result = await pdf_router.aprocess("/tmp/test.pdf")
+
+        process_mock.assert_called_once_with("/tmp/test.pdf", None)
+        assert result is expected_result
+
+    @pytest.mark.asyncio
+    async def test_aprocess_propagates_source_uri(
+        self, pdf_router: PDFRouter,
+    ) -> None:
+        """source_uri should be forwarded to process()."""
+        expected_result = _make_processing_result()
+
+        with patch.object(
+            pdf_router, "process",
+            return_value=expected_result,
+        ) as process_mock:
+            await pdf_router.aprocess("/tmp/test.pdf", source_uri="s3://bucket/test.pdf")
+
+        process_mock.assert_called_once_with("/tmp/test.pdf", "s3://bucket/test.pdf")
+
+    @pytest.mark.asyncio
+    async def test_aprocess_propagates_exceptions(
+        self, pdf_router: PDFRouter,
+    ) -> None:
+        """Exceptions from process() should propagate through aprocess()."""
+        with patch.object(
+            pdf_router, "process",
+            side_effect=RuntimeError("process failed"),
+        ):
+            with pytest.raises(RuntimeError, match="process failed"):
+                await pdf_router.aprocess("/tmp/test.pdf")
 
 
 # ---------------------------------------------------------------------------
