@@ -341,6 +341,250 @@ run_module("Inspector (Classification)", test_inspector)
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 11. PDFRouter — Full End-to-End Pipeline
+# ──────────────────────────────────────────────────────────────────────
+def test_pdf_router():
+    # Import mock backends from conftest
+    sys.path.insert(0, "packages/ingestkit-pdf/tests")
+    from conftest import (
+        MockEmbeddingBackend,
+        MockLLMBackend,
+        MockStructuredDBBackend,
+        MockVectorStoreBackend,
+    )
+
+    from ingestkit_pdf.router import PDFRouter
+
+    # Set up mock backends
+    # LLM needs at least one response for potential Tier 2 classification
+    mock_llm = MockLLMBackend(responses=[
+        {"pdf_type": "text_native", "confidence": 0.9, "reasoning": "All pages text"},
+    ])
+    mock_vector = MockVectorStoreBackend()
+    mock_db = MockStructuredDBBackend()
+    mock_embedder = MockEmbeddingBackend()
+
+    router = PDFRouter(
+        vector_store=mock_vector,
+        structured_db=mock_db,
+        llm=mock_llm,
+        embedder=mock_embedder,
+        config=config,
+    )
+
+    # Test can_handle
+    assert router.can_handle(PDF_PATH), "can_handle should return True for .pdf"
+    assert not router.can_handle("file.xlsx"), "can_handle should return False for .xlsx"
+    print(f"  can_handle: OK")
+
+    # Process the real PDF
+    result = router.process(PDF_PATH)
+    print(f"  PDF Type: {result.classification_result.pdf_type}")
+    print(f"  Tier: {result.classification_result.tier_used}")
+    print(f"  Ingestion method: {result.ingestion_method}")
+    print(f"  Chunks created: {result.chunks_created}")
+    print(f"  Tables created: {result.tables_created}")
+    print(f"  Errors: {result.errors}")
+    print(f"  Warnings: {result.warnings}")
+    print(f"  Degraded: {result.classification_result.degraded}")
+    print(f"  Ingest key: {result.ingest_key[:16]}...")
+    print(f"  Processing time: {result.processing_time_seconds:.2f}s")
+
+    # Check vector store got chunks
+    if hasattr(mock_vector, 'total_chunks_upserted'):
+        print(f"  Vector store chunks upserted: {mock_vector.total_chunks_upserted}")
+    if hasattr(mock_embedder, 'total_texts_embedded'):
+        print(f"  Texts embedded: {mock_embedder.total_texts_embedded}")
+
+
+run_module("PDFRouter (End-to-End)", test_pdf_router)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 12. ComplexProcessor — Direct Test with Mock Backends
+# ──────────────────────────────────────────────────────────────────────
+def test_complex_processor():
+    sys.path.insert(0, "packages/ingestkit-pdf/tests")
+    from conftest import (
+        MockEmbeddingBackend,
+        MockLLMBackend,
+        MockStructuredDBBackend,
+        MockVectorStoreBackend,
+    )
+
+    from ingestkit_pdf.processors.complex_processor import ComplexProcessor
+    from ingestkit_pdf.models import (
+        ClassificationResult,
+        ClassificationStageResult,
+        ClassificationTier,
+        DocumentMetadata,
+        DocumentProfile,
+        ExtractionQuality,
+        PageProfile,
+        PageType,
+        ParseStageResult,
+        PDFType,
+    )
+    import hashlib
+
+    mock_vector = MockVectorStoreBackend()
+    mock_db = MockStructuredDBBackend()
+    mock_embedder = MockEmbeddingBackend()
+    mock_llm = MockLLMBackend()
+
+    processor = ComplexProcessor(
+        vector_store=mock_vector,
+        structured_db=mock_db,
+        embedder=mock_embedder,
+        llm=mock_llm,
+        config=config,
+    )
+
+    # Build profile with mixed page types to exercise routing
+    pages_with_text = sum(1 for i in range(len(doc)) if len(doc[i].get_text().strip()) > 50)
+    pages = []
+    for i in range(len(doc)):
+        page = doc[i]
+        text = page.get_text()
+        blocks = page.get_text("dict")["blocks"]
+        img_blocks = [b for b in blocks if b.get("type") == 1]
+        total_area = page.rect.width * page.rect.height
+        img_area = sum(
+            (b["bbox"][2] - b["bbox"][0]) * (b["bbox"][3] - b["bbox"][1])
+            for b in img_blocks
+        ) if img_blocks else 0
+        fonts = set()
+        for b in blocks:
+            for line in b.get("lines", []):
+                for span in line.get("spans", []):
+                    fonts.add(span.get("font", "unknown"))
+
+        page_quality = ExtractionQuality(
+            printable_ratio=0.95,
+            avg_words_per_page=len(text.split()),
+            pages_with_text=pages_with_text,
+            total_pages=len(doc),
+            extraction_method="pymupdf",
+        )
+        pages.append(
+            PageProfile(
+                page_number=i + 1,
+                text_length=len(text),
+                word_count=len(text.split()),
+                image_count=len(img_blocks),
+                image_coverage_ratio=img_area / total_area if total_area > 0 else 0.0,
+                table_count=0,
+                font_count=len(fonts),
+                font_names=sorted(fonts),
+                has_form_fields=False,
+                is_multi_column=False,
+                page_type=PageType.TEXT,
+                extraction_quality=page_quality,
+            )
+        )
+
+    pdf_bytes = open(PDF_PATH, "rb").read()
+    profile = DocumentProfile(
+        file_path=PDF_PATH,
+        file_size_bytes=len(pdf_bytes),
+        page_count=len(doc),
+        content_hash=hashlib.sha256(pdf_bytes).hexdigest(),
+        metadata=DocumentMetadata(
+            title=doc.metadata.get("title", ""),
+            author=doc.metadata.get("author", ""),
+            page_count=len(doc),
+            file_size_bytes=len(pdf_bytes),
+        ),
+        pages=pages,
+        page_type_distribution={"text": len(pages)},
+        detected_languages=["en"],
+        has_toc=False,
+        overall_quality=ExtractionQuality(
+            printable_ratio=0.95,
+            avg_words_per_page=500,
+            pages_with_text=pages_with_text,
+            total_pages=len(doc),
+            extraction_method="pymupdf",
+        ),
+        security_warnings=[],
+    )
+
+    classification = ClassificationResult(
+        pdf_type=PDFType.COMPLEX,
+        confidence=0.85,
+        tier_used=ClassificationTier.RULE_BASED,
+        reasoning="Test",
+        per_page_types={i + 1: PageType.TEXT for i in range(len(doc))},
+    )
+
+    parse_result = ParseStageResult(
+        pages_extracted=len(doc),
+        pages_skipped=0,
+        skipped_reasons={},
+        extraction_method="pymupdf",
+        overall_quality=ExtractionQuality(
+            printable_ratio=0.95,
+            avg_words_per_page=500,
+            pages_with_text=pages_with_text,
+            total_pages=len(doc),
+            extraction_method="pymupdf",
+        ),
+        parse_duration_seconds=0.1,
+    )
+
+    classification_stage = ClassificationStageResult(
+        pdf_type=PDFType.COMPLEX,
+        confidence=0.85,
+        tier_used=ClassificationTier.RULE_BASED,
+        reasoning="Test",
+        per_page_types={i + 1: PageType.TEXT for i in range(len(doc))},
+        classification_duration_seconds=0.01,
+    )
+
+    result = processor.process(
+        file_path=PDF_PATH,
+        profile=profile,
+        ingest_key="test-complex-key",
+        ingest_run_id="test-complex-run",
+        parse_result=parse_result,
+        classification_result=classification_stage,
+        classification=classification,
+    )
+
+    print(f"  Chunks created: {result.chunks_created}")
+    print(f"  Tables created: {result.tables_created}")
+    print(f"  Errors: {result.errors}")
+    print(f"  Warnings: {result.warnings}")
+    print(f"  Ingestion method: {result.ingestion_method}")
+    if hasattr(mock_vector, 'total_chunks_upserted'):
+        print(f"  Vector store chunks: {mock_vector.total_chunks_upserted}")
+    if hasattr(mock_embedder, 'total_texts_embedded'):
+        print(f"  Texts embedded: {mock_embedder.total_texts_embedded}")
+
+
+run_module("ComplexProcessor (Direct)", test_complex_processor)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13. PaddleOCR Engine (availability check)
+# ──────────────────────────────────────────────────────────────────────
+def test_paddleocr():
+    from ingestkit_pdf.utils.ocr_engines import PaddleOCREngine
+
+    try:
+        engine = PaddleOCREngine(lang="en")
+        print(f"  PaddleOCR available: True")
+        print(f"  Engine name: {engine.name()}")
+    except Exception as e:
+        print(f"  PaddleOCR available: False ({type(e).__name__}: {e})")
+        print(f"  (This is expected if paddleocr is not installed)")
+        results["PaddleOCR Engine"] = "SKIP (not installed)"
+
+
+run_module("PaddleOCR Engine", test_paddleocr)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Summary
 # ──────────────────────────────────────────────────────────────────────
 print(f"\n{'=' * 70}")
