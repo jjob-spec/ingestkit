@@ -12,6 +12,7 @@ from ingestkit_pdf.utils.ocr_engines import (
     EngineUnavailableError,
     OCREngineInterface,
     OCRPageResult,
+    PaddleOCREngine,
     TesseractEngine,
     create_ocr_engine,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "LayoutResult",
     "OCREngineInterface",
     "OCRPageResult",
+    "PaddleOCREngine",
     "PageRenderer",
     "TesseractEngine",
     "TextBlock",

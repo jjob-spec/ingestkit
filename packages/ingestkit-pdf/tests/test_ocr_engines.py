@@ -14,9 +14,12 @@ from ingestkit_pdf.utils.ocr_engines import (
     EngineUnavailableError,
     OCREngineInterface,
     OCRPageResult,
+    PaddleOCREngine,
     TesseractEngine,
     _LANGUAGE_MAP,
+    _PADDLEOCR_LANG_MAP,
     _tesseract_available,
+    _to_paddleocr_lang,
     _to_tesseract_lang,
     create_ocr_engine,
 )
@@ -102,6 +105,13 @@ class TestOCREngineInterface:
         engine = TesseractEngine()
         assert isinstance(engine, OCREngineInterface)
 
+    def test_paddleocr_engine_satisfies_protocol(self) -> None:
+        mock_module = MagicMock()
+        mock_module.PaddleOCR.return_value = MagicMock()
+        with patch.dict(sys.modules, {"paddleocr": mock_module}):
+            engine = PaddleOCREngine()
+            assert isinstance(engine, OCREngineInterface)
+
     def test_arbitrary_class_without_methods_fails_protocol(self) -> None:
         assert not isinstance(object(), OCREngineInterface)
 
@@ -129,6 +139,42 @@ class TestLanguageMapping:
 
     def test_already_tesseract_code_passes_through(self) -> None:
         assert _to_tesseract_lang("eng") == "eng"
+
+
+# ---------------------------------------------------------------------------
+# TestPaddleOCRLanguageMapping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPaddleOCRLanguageMapping:
+    """Tests for _to_paddleocr_lang() and _PADDLEOCR_LANG_MAP."""
+
+    def test_chinese_maps_to_ch(self) -> None:
+        assert _to_paddleocr_lang("zh") == "ch"
+
+    def test_korean_maps_to_korean(self) -> None:
+        assert _to_paddleocr_lang("ko") == "korean"
+
+    def test_japanese_maps_to_japan(self) -> None:
+        assert _to_paddleocr_lang("ja") == "japan"
+
+    def test_german_maps_to_german(self) -> None:
+        assert _to_paddleocr_lang("de") == "german"
+
+    def test_english_passes_through(self) -> None:
+        assert _to_paddleocr_lang("en") == "en"
+
+    def test_french_passes_through(self) -> None:
+        assert _to_paddleocr_lang("fr") == "fr"
+
+    def test_unknown_code_passes_through(self) -> None:
+        assert _to_paddleocr_lang("xyz") == "xyz"
+
+    def test_map_only_contains_exceptions(self) -> None:
+        """Map should only contain codes where PaddleOCR deviates from ISO 639-1."""
+        assert "en" not in _PADDLEOCR_LANG_MAP
+        assert "fr" not in _PADDLEOCR_LANG_MAP
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +311,203 @@ class TestTesseractEngine:
 
 
 # ---------------------------------------------------------------------------
+# Helpers — PaddleOCR
+# ---------------------------------------------------------------------------
+
+
+def _mock_paddleocr_result(
+    lines: list[tuple[str, float]],
+) -> list[list[list]]:
+    """Build a mock PaddleOCR ocr() return value.
+
+    PaddleOCR returns: [[[bbox, (text, conf)], ...]]
+    """
+    page_lines = []
+    for text, conf in lines:
+        bbox = [[0, 0], [100, 0], [100, 20], [0, 20]]  # dummy bbox
+        page_lines.append([bbox, (text, conf)])
+    return [page_lines]
+
+
+# ---------------------------------------------------------------------------
+# TestPaddleOCREngine
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPaddleOCREngine:
+    """Tests for PaddleOCREngine adapter (mock-based, no real PaddleOCR)."""
+
+    @pytest.fixture()
+    def mock_paddleocr(self) -> MagicMock:
+        """Mock the paddleocr module and its PaddleOCR class."""
+        mock_module = MagicMock()
+        mock_ocr_instance = MagicMock()
+        mock_module.PaddleOCR.return_value = mock_ocr_instance
+        with patch.dict(sys.modules, {"paddleocr": mock_module}):
+            yield mock_module
+
+    @pytest.fixture()
+    def mock_numpy(self) -> MagicMock:
+        """Mock numpy.array for PIL-to-ndarray conversion.
+
+        We patch only numpy.array (not the whole module in sys.modules)
+        because pytest.approx relies on the real numpy.bool_ type.
+        """
+        mock_np = MagicMock()
+        mock_np.array.return_value = MagicMock()  # fake ndarray
+        with patch("numpy.array", mock_np.array):
+            yield mock_np
+
+    def test_name_returns_paddleocr(self, mock_paddleocr: MagicMock) -> None:
+        engine = PaddleOCREngine()
+        assert engine.name() == "paddleocr"
+
+    def test_init_creates_paddleocr_instance(self, mock_paddleocr: MagicMock) -> None:
+        PaddleOCREngine(lang="en")
+        mock_paddleocr.PaddleOCR.assert_called_once_with(
+            lang="en", use_angle_cls=True, show_log=False,
+        )
+
+    def test_init_maps_language(self, mock_paddleocr: MagicMock) -> None:
+        PaddleOCREngine(lang="zh")
+        mock_paddleocr.PaddleOCR.assert_called_once_with(
+            lang="ch", use_angle_cls=True, show_log=False,
+        )
+
+    def test_init_raises_import_error_when_not_installed(self) -> None:
+        """Without paddleocr in sys.modules, __init__ raises ImportError."""
+        saved = sys.modules.pop("paddleocr", None)
+        try:
+            original_import = (
+                __builtins__.__import__
+                if hasattr(__builtins__, "__import__")
+                else __import__
+            )
+
+            def _fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+                if name == "paddleocr":
+                    raise ImportError("mocked missing")
+                return original_import(name, *args, **kwargs)
+
+            with patch("builtins.__import__", side_effect=_fake_import):
+                with pytest.raises(ImportError):
+                    PaddleOCREngine()
+        finally:
+            if saved is not None:
+                sys.modules["paddleocr"] = saved
+
+    def test_recognize_basic(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        engine = PaddleOCREngine()
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = _mock_paddleocr_result([
+            ("Hello world", 0.95),
+            ("Second line", 0.88),
+        ])
+
+        image = MagicMock()
+        result = engine.recognize(image, language="en")
+
+        assert result.text == "Hello world\nSecond line"
+        assert result.confidence == pytest.approx(0.915)
+        assert result.word_confidences == [0.95, 0.88]
+        mock_numpy.array.assert_called_once_with(image)
+
+    def test_recognize_empty_page_none_result(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        engine = PaddleOCREngine()
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = None
+
+        result = engine.recognize(MagicMock(), language="en")
+
+        assert result.text == ""
+        assert result.confidence == 0.0
+        assert result.word_confidences is None
+
+    def test_recognize_empty_page_nested_none(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        engine = PaddleOCREngine()
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = [[None]]
+
+        result = engine.recognize(MagicMock(), language="en")
+
+        assert result.text == ""
+        assert result.confidence == 0.0
+
+    def test_recognize_empty_list_result(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        engine = PaddleOCREngine()
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = [[]]
+
+        result = engine.recognize(MagicMock(), language="en")
+
+        assert result.text == ""
+        assert result.confidence == 0.0
+
+    def test_recognize_filters_whitespace_only_lines(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        engine = PaddleOCREngine()
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = _mock_paddleocr_result([
+            ("Hello", 0.9),
+            ("  ", 0.5),
+            ("World", 0.8),
+        ])
+
+        result = engine.recognize(MagicMock(), language="en")
+
+        assert result.text == "Hello\nWorld"
+        assert len(result.word_confidences) == 2
+
+    def test_recognize_maps_language(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        """When recognize() language differs from init, a new OCR instance is created."""
+        engine = PaddleOCREngine(lang="en")
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = _mock_paddleocr_result([("text", 0.9)])
+
+        engine.recognize(MagicMock(), language="zh")
+
+        # Second call to PaddleOCR() for the different language
+        calls = mock_paddleocr.PaddleOCR.call_args_list
+        assert len(calls) == 2
+        assert calls[1][1]["lang"] == "ch"
+
+    def test_confidence_already_0_to_1(
+        self, mock_paddleocr: MagicMock, mock_numpy: MagicMock,
+    ) -> None:
+        """PaddleOCR confidence is already 0-1 (unlike Tesseract's 0-100)."""
+        engine = PaddleOCREngine()
+        ocr_instance = mock_paddleocr.PaddleOCR.return_value
+        ocr_instance.ocr.return_value = _mock_paddleocr_result([
+            ("word", 0.966),
+        ])
+
+        result = engine.recognize(MagicMock(), language="en")
+
+        assert result.word_confidences == [0.966]
+        assert result.confidence == pytest.approx(0.966)
+
+    def test_satisfies_protocol(self, mock_paddleocr: MagicMock) -> None:
+        engine = PaddleOCREngine()
+        assert isinstance(engine, OCREngineInterface)
+
+    def test_default_lang_is_en(self, mock_paddleocr: MagicMock) -> None:
+        engine = PaddleOCREngine()
+        assert engine._lang == "en"
+
+
+# ---------------------------------------------------------------------------
 # TestCreateOCREngine
 # ---------------------------------------------------------------------------
 
@@ -356,6 +599,18 @@ class TestCreateOCREngine:
             create_ocr_engine(config)
 
     @patch("ingestkit_pdf.utils.ocr_engines._tesseract_available", return_value=True)
+    def test_paddleocr_config_returns_paddleocr_engine_when_available(
+        self, mock_avail: MagicMock,
+    ) -> None:
+        mock_module = MagicMock()
+        mock_module.PaddleOCR.return_value = MagicMock()
+        with patch.dict(sys.modules, {"paddleocr": mock_module}):
+            config = _make_config(ocr_engine=OCREngine.PADDLEOCR)
+            engine, warnings = create_ocr_engine(config)
+            assert isinstance(engine, PaddleOCREngine)
+            assert warnings == []
+
+    @patch("ingestkit_pdf.utils.ocr_engines._tesseract_available", return_value=True)
     def test_return_type_is_tuple(self, mock_avail: MagicMock) -> None:
         config = _make_config(ocr_engine=OCREngine.TESSERACT)
         result = create_ocr_engine(config)
@@ -379,3 +634,41 @@ class TestEngineUnavailableError:
     def test_message_preserved(self) -> None:
         err = EngineUnavailableError("custom message")
         assert str(err) == "custom message"
+
+
+# ---------------------------------------------------------------------------
+# TestPaddleOCREngineIntegration
+# ---------------------------------------------------------------------------
+
+
+try:
+    import paddleocr as _paddleocr_check  # noqa: F401
+
+    _has_paddleocr = True
+except ImportError:
+    _has_paddleocr = False
+
+
+@pytest.mark.ocr_paddle
+@pytest.mark.skipif(not _has_paddleocr, reason="PaddleOCR not installed")
+class TestPaddleOCREngineIntegration:
+    """Integration tests requiring real PaddleOCR installation.
+
+    Run with: pytest -m ocr_paddle
+    Skip in CI unless PaddleOCR is installed.
+    """
+
+    def test_recognize_simple_image(self) -> None:
+        """Smoke test: recognize text from a simple synthetic image."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (200, 50), color="white")
+        draw = ImageDraw.Draw(img)
+        draw.text((10, 10), "Hello", fill="black")
+
+        engine = PaddleOCREngine(lang="en")
+        result = engine.recognize(img, language="en")
+
+        assert isinstance(result, OCRPageResult)
+        assert result.confidence > 0.0
+        assert len(result.text) > 0
