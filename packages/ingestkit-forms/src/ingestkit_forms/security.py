@@ -226,3 +226,24 @@ def validate_regex_pattern(pattern: str) -> str | None:
         return None
     except re.error as exc:
         return str(exc)
+
+
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,127}$")
+
+
+def validate_table_name(name: str) -> str | None:
+    """Validate that a string is a safe SQL identifier.
+
+    Enforces: starts with letter or underscore, followed by letters/digits/underscores,
+    max 128 characters total.
+
+    Returns:
+        None if valid, or an error description string if invalid.
+    """
+    if not name:
+        return "Identifier cannot be empty"
+    if len(name) > 128:
+        return f"Identifier exceeds maximum length of 128 characters (got {len(name)})"
+    if not _SAFE_IDENTIFIER_RE.match(name):
+        return f"Identifier '{name}' does not match safe pattern ^[a-zA-Z_][a-zA-Z0-9_]{{0,127}}$"
+    return None

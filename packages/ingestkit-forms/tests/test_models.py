@@ -319,6 +319,7 @@ class TestTemplateMatch:
                 template_id="t1",
                 template_name="Test",
                 template_version=1,
+                source_format="pdf",
                 confidence=1.5,
                 per_page_confidence=[0.9],
                 matched_features=["layout_grid"],
@@ -329,11 +330,28 @@ class TestTemplateMatch:
             template_id="t1",
             template_name="Test",
             template_version=1,
+            source_format="pdf",
             confidence=0.85,
             per_page_confidence=[0.9, 0.8],
             matched_features=["layout_grid"],
         )
         assert m.confidence == 0.85
+        assert m.source_format.value == "pdf"
+        assert m.page_alignment == {}
+
+    def test_page_alignment(self) -> None:
+        m = TemplateMatch(
+            template_id="t1",
+            template_name="Test",
+            template_version=1,
+            source_format="pdf",
+            confidence=0.9,
+            page_alignment={"window_start": 0, "template_pages": 1, "document_pages": 3},
+            per_page_confidence=[0.9],
+            matched_features=["layout_grid"],
+        )
+        assert m.page_alignment["window_start"] == 0
+        assert m.page_alignment["document_pages"] == 3
 
 
 @pytest.mark.unit

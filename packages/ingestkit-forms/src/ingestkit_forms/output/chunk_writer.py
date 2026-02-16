@@ -276,11 +276,13 @@ class FormChunkWriter:
                 if attempt < max_attempts - 1:
                     sleep_time = self._config.backend_backoff_base * (2 ** attempt)
                     logger.warning(
-                        "Embed attempt %d/%d failed: %s. Retrying in %.1fs.",
-                        attempt + 1,
-                        max_attempts,
-                        exc,
-                        sleep_time,
+                        "forms.write.embed_retry",
+                        extra={
+                            "attempt": attempt + 1,
+                            "max_attempts": max_attempts,
+                            "retry_delay_s": sleep_time,
+                            "error": str(exc),
+                        },
                     )
                     time.sleep(sleep_time)
 
@@ -309,11 +311,13 @@ class FormChunkWriter:
                 if attempt < max_attempts - 1:
                     sleep_time = self._config.backend_backoff_base * (2 ** attempt)
                     logger.warning(
-                        "Upsert attempt %d/%d failed: %s. Retrying in %.1fs.",
-                        attempt + 1,
-                        max_attempts,
-                        exc,
-                        sleep_time,
+                        "forms.write.upsert_retry",
+                        extra={
+                            "attempt": attempt + 1,
+                            "max_attempts": max_attempts,
+                            "retry_delay_s": sleep_time,
+                            "error": str(exc),
+                        },
                     )
                     time.sleep(sleep_time)
 

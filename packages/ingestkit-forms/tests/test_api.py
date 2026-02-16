@@ -302,6 +302,7 @@ class TestMatchDocument:
                 template_id="t1",
                 template_name="Form A",
                 template_version=1,
+                source_format="pdf",
                 confidence=0.9,
                 per_page_confidence=[0.9],
                 matched_features=["layout_grid"],

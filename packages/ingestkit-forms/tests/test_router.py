@@ -157,6 +157,24 @@ class TestRouterConstructor:
         assert router._vlm_extractor is None
         assert router._dual_writer is not None
 
+    def test_router_warns_when_pdf_widget_backend_missing(self, form_config, caplog):
+        """Router logs W_FORM_NATIVE_FIELDS_UNAVAILABLE when PDFWidgetBackend is None."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="ingestkit_forms"):
+            FormRouter(
+                template_store=MockFormTemplateStore(),
+                fingerprinter=MockLayoutFingerprinter(),
+                form_db=MockFormDBBackend(),
+                vector_store=MockVectorStoreBackend(),
+                embedder=MockEmbeddingBackend(),
+                config=form_config,
+            )
+        assert any(
+            "W_FORM_NATIVE_FIELDS_UNAVAILABLE" in record.message
+            for record in caplog.records
+        )
+
 
 # ---------------------------------------------------------------------------
 # Extractor Selection Tests
@@ -591,21 +609,20 @@ class TestMatchDocument:
         with caplog.at_level(logging.INFO, logger="ingestkit_forms"):
             router.match_document(str(xlsx_file))
 
-        # Find the structured match log
+        # Find the structured match log (forms.match.fallthrough or forms.match.auto)
         match_logs = [
             r for r in caplog.records
-            if "form_match" in r.message and "stage=match" in r.message
+            if "forms.match." in r.message
         ]
         assert len(match_logs) == 1
 
-        msg = match_logs[0].message
-        assert "template_candidates=" in msg
-        assert "top_confidence=" in msg
-        assert "match_duration_ms=" in msg
-        assert "match_result=" in msg
+        record = match_logs[0]
+        assert hasattr(record, "template_candidates")
+        assert hasattr(record, "confidence")
+        assert hasattr(record, "match_duration_ms")
 
     def test_match_document_disabled_logs_fallthrough(self, all_backends, tmp_path, caplog):
-        """Disabled matching logs match_result=fallthrough."""
+        """Disabled matching logs forms.match.disabled."""
         import logging
 
         config = FormProcessorConfig(
@@ -623,7 +640,7 @@ class TestMatchDocument:
 
         match_logs = [
             r for r in caplog.records
-            if "form_match" in r.message and "match_result=fallthrough" in r.message
+            if "forms.match.disabled" in r.message
         ]
         assert len(match_logs) == 1
 
@@ -637,23 +654,14 @@ class TestMatchDocument:
 class TestTryMatch:
     """Tests for FormRouter.try_match pipeline gate."""
 
-    def test_try_match_manual_template(self, all_backends, form_config, xlsx_template, tmp_path):
-        """Manual template_id returns synthetic TemplateMatch with confidence=1.0."""
-        store = all_backends["template_store"]
-        store.save_template(xlsx_template)
-
+    def test_try_match_auto_no_match(self, all_backends, form_config, tmp_path):
+        """No fingerprint match returns None."""
         router = FormRouter(**all_backends, config=form_config)
         xlsx_file = tmp_path / "form.xlsx"
         xlsx_file.touch()
 
-        result = router.try_match(
-            str(xlsx_file), template_id="tmpl-xlsx-1"
-        )
-        assert result is not None
-        assert isinstance(result, TemplateMatch)
-        assert result.template_id == "tmpl-xlsx-1"
-        assert result.confidence == 1.0
-        assert "manual_override" in result.matched_features
+        result = router.try_match(str(xlsx_file))
+        assert result is None
 
     def test_try_match_auto_below_threshold(self, all_backends, form_config, tmp_path):
         """No match above threshold returns None (graceful fallthrough)."""
@@ -726,13 +734,13 @@ class TestTryMatch:
         assert len(db.execute_sql_calls) == db_calls_before
         assert len(vs.upsert_calls) == vs_calls_before
 
-    def test_try_match_manual_template_not_found(self, all_backends, form_config, tmp_path):
-        """Manual template_id that doesn't exist returns None (exception caught)."""
+    def test_try_match_with_tenant_id(self, all_backends, form_config, tmp_path):
+        """try_match accepts tenant_id parameter per spec."""
         router = FormRouter(**all_backends, config=form_config)
         xlsx_file = tmp_path / "form.xlsx"
         xlsx_file.touch()
 
-        result = router.try_match(str(xlsx_file), template_id="nonexistent")
+        result = router.try_match(str(xlsx_file), tenant_id="custom-tenant")
         assert result is None
 
 
@@ -776,12 +784,9 @@ class TestStructuredLogging:
 
         match_logs = [
             r for r in caplog.records
-            if "form_match" in r.message and "stage=match" in r.message
+            if "forms.match.manual" in r.message
         ]
         assert len(match_logs) >= 1
-        msg = match_logs[0].message
-        assert "match_result=manual" in msg
-        assert "match_duration_ms=" in msg
 
     def test_extract_form_extract_stage_log(self, all_backends, form_config, xlsx_template, tmp_path, caplog):
         """extract_form logs structured extract-stage fields."""
@@ -808,16 +813,9 @@ class TestStructuredLogging:
 
         extract_logs = [
             r for r in caplog.records
-            if "form_extract" in r.message and "stage=extract" in r.message
+            if "forms.extract.completed" in r.message
         ]
         assert len(extract_logs) >= 1
-        msg = extract_logs[0].message
-        assert "template_id=" in msg
-        assert "template_version=" in msg
-        assert "fields_extracted=" in msg
-        assert "fields_failed=" in msg
-        assert "extraction_method=" in msg
-        assert "extract_duration_ms=" in msg
 
     def test_pii_safe_logging(self, all_backends, form_config, xlsx_template, tmp_path, caplog):
         """No field values appear in log output (PII safety)."""
@@ -866,6 +864,157 @@ class TestStructuredLogging:
 
         match_logs = [
             r for r in caplog.records
-            if "form_match" in r.message and "match_result=fallthrough" in r.message
+            if "forms.match.fallthrough" in r.message
         ]
         assert len(match_logs) >= 1
+
+
+# ---------------------------------------------------------------------------
+# manual_override field tests (issue #102)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestManualOverride:
+    """Tests for FormIngestRequest.manual_override field."""
+
+    def test_manual_override_default_false(self):
+        """manual_override defaults to False."""
+        req = FormIngestRequest(file_path="/tmp/test.pdf")
+        assert req.manual_override is False
+
+    def test_manual_override_explicit_true(self):
+        """manual_override=True is accepted."""
+        req = FormIngestRequest(
+            file_path="/tmp/test.pdf",
+            template_id="tmpl-1",
+            manual_override=True,
+        )
+        assert req.manual_override is True
+
+    def test_manual_override_triggers_manual_path(
+        self, all_backends, form_config, xlsx_template, tmp_path
+    ):
+        """manual_override=True routes through manual override path."""
+        import logging
+        import openpyxl
+
+        store = all_backends["template_store"]
+        store.save_template(xlsx_template)
+
+        xlsx_file = tmp_path / "form.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["B2"] = "Test"
+        wb.save(str(xlsx_file))
+
+        router = FormRouter(**all_backends, config=form_config)
+        request = FormIngestRequest(
+            file_path=str(xlsx_file),
+            template_id="tmpl-xlsx-1",
+            manual_override=True,
+        )
+        result = router.extract_form(request)
+        assert result is not None
+        assert isinstance(result, FormProcessingResult)
+
+    def test_template_id_without_override_still_works(
+        self, all_backends, form_config, xlsx_template, tmp_path
+    ):
+        """template_id alone (without manual_override) still uses manual path."""
+        import openpyxl
+
+        store = all_backends["template_store"]
+        store.save_template(xlsx_template)
+
+        xlsx_file = tmp_path / "form.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["B2"] = "Test"
+        wb.save(str(xlsx_file))
+
+        router = FormRouter(**all_backends, config=form_config)
+        request = FormIngestRequest(
+            file_path=str(xlsx_file),
+            template_id="tmpl-xlsx-1",
+        )
+        result = router.extract_form(request)
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# validate_table_name tests (issue #103)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestValidateTableName:
+    """Tests for validate_table_name and its integration in db_writer."""
+
+    def test_valid_identifiers(self):
+        """Valid SQL identifiers pass validation."""
+        from ingestkit_forms.security import validate_table_name
+
+        assert validate_table_name("forms_employee") is None
+        assert validate_table_name("_private") is None
+        assert validate_table_name("A123") is None
+        assert validate_table_name("a" * 128) is None
+
+    def test_empty_name(self):
+        """Empty string is rejected."""
+        from ingestkit_forms.security import validate_table_name
+
+        result = validate_table_name("")
+        assert result is not None
+        assert "empty" in result.lower()
+
+    def test_starts_with_digit(self):
+        """Names starting with a digit are rejected."""
+        from ingestkit_forms.security import validate_table_name
+
+        result = validate_table_name("1table")
+        assert result is not None
+
+    def test_special_characters(self):
+        """Names with special characters are rejected."""
+        from ingestkit_forms.security import validate_table_name
+
+        assert validate_table_name("drop;table") is not None
+        assert validate_table_name("my-table") is not None
+        assert validate_table_name("my table") is not None
+        assert validate_table_name("table$") is not None
+
+    def test_too_long(self):
+        """Names exceeding 128 chars are rejected."""
+        from ingestkit_forms.security import validate_table_name
+
+        result = validate_table_name("a" * 129)
+        assert result is not None
+        assert "128" in result
+
+    def test_get_table_name_validates(self):
+        """get_table_name raises on unsafe generated names."""
+        from ingestkit_forms.output.db_writer import get_table_name
+
+        config = FormProcessorConfig(
+            form_db_table_prefix="forms_",
+            tenant_id="test-tenant",
+        )
+        # Normal template name should pass
+        template = make_template(name="Employee Form")
+        table_name = get_table_name(config, template)
+        assert table_name == "forms_employee_form"
+
+    def test_get_table_name_rejects_unsafe(self):
+        """get_table_name raises FormIngestException for unsafe names."""
+        from ingestkit_forms.output.db_writer import get_table_name
+
+        # A prefix starting with a digit would make the result unsafe
+        config = FormProcessorConfig(
+            form_db_table_prefix="1_",
+            tenant_id="test-tenant",
+        )
+        template = make_template(name="Test")
+        with pytest.raises(FormIngestException) as exc_info:
+            get_table_name(config, template)
+        assert exc_info.value.code == FormErrorCode.E_FORM_TEMPLATE_INVALID

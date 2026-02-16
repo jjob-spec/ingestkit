@@ -17,8 +17,8 @@ class TestFormErrorCodeEnum:
     """Tests for the FormErrorCode(str, Enum) taxonomy."""
 
     def test_total_member_count(self) -> None:
-        """Enum has exactly 41 members (21 E_FORM_* + 6 E_BACKEND_* + 14 W_FORM_*)."""
-        assert len(FormErrorCode) == 41
+        """Enum has exactly 42 members (21 E_FORM_* + 6 E_BACKEND_* + 15 W_FORM_*)."""
+        assert len(FormErrorCode) == 42
 
     def test_all_names_equal_values(self) -> None:
         """Every enum member's name equals its string value (ENUM_VALUE guard)."""
@@ -40,7 +40,7 @@ class TestFormErrorCodeEnum:
     def test_warning_codes_prefixed_with_w(self) -> None:
         """All W_ codes start with 'W_'."""
         warning_codes = [m for m in FormErrorCode if m.value.startswith("W_")]
-        assert len(warning_codes) == 14
+        assert len(warning_codes) == 15
 
     def test_form_specific_error_codes_count(self) -> None:
         """21 form-specific E_ codes (excluding E_BACKEND_*)."""
