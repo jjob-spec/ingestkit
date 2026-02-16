@@ -154,8 +154,12 @@ class FormTemplateStore(Protocol):
         tenant_id: str | None = None,
         source_format: str | None = None,
         active_only: bool = True,
+        status: str | None = None,
     ) -> list[FormTemplate]:
-        """List templates matching the filters."""
+        """List templates matching the filters.
+
+        If status is provided, only templates with that status are returned.
+        """
         ...
 
     def list_versions(self, template_id: str) -> list[FormTemplate]:

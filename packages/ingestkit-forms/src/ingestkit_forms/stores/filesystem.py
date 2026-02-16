@@ -120,11 +120,13 @@ class FileSystemTemplateStore:
         tenant_id: str | None = None,
         source_format: str | None = None,
         active_only: bool = True,
+        status: str | None = None,
     ) -> list[FormTemplate]:
         """List templates matching the filters.
 
         Returns the latest version of each template.
         If active_only=True (default), excludes soft-deleted templates.
+        If status is provided, only templates with that status are returned.
         """
         results: list[FormTemplate] = []
 
@@ -151,6 +153,9 @@ class FileSystemTemplateStore:
                 continue
 
             if source_format is not None and template.source_format.value != source_format:
+                continue
+
+            if status is not None and template.status.value != status:
                 continue
 
             results.append(template)
@@ -221,15 +226,16 @@ class FileSystemTemplateStore:
         tenant_id: str | None = None,
         source_format: str | None = None,
     ) -> list[tuple[str, str, int, bytes]]:
-        """Return (template_id, name, version, fingerprint) for all active templates.
+        """Return (template_id, name, version, fingerprint) for approved templates.
 
         Used by the matcher for efficient batch comparison.
-        Only returns templates with non-None layout_fingerprint.
+        Only returns approved templates with non-None layout_fingerprint.
         """
         templates = self.list_templates(
             tenant_id=tenant_id,
             source_format=source_format,
             active_only=True,
+            status="approved",
         )
         results: list[tuple[str, str, int, bytes]] = []
         for t in templates:

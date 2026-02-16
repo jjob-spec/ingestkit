@@ -14,6 +14,7 @@ from ingestkit_forms.models import (
     FormTemplateUpdateRequest,
     SourceFormat,
     TemplateMatch,
+    TemplateStatus,
 )
 
 
@@ -415,3 +416,248 @@ class TestPreviewExtraction:
         api = FormTemplateAPI(store=mock_template_store, config=form_config)
         with pytest.raises(FormIngestException):
             api.preview_extraction("/tmp/form.xlsx", "tmpl-1")
+
+
+# ---------------------------------------------------------------------------
+# Template Lifecycle tests (issue #98)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestApproveTemplate:
+    """Tests for FormTemplateAPI.approve_template."""
+
+    def test_approve_sets_status_and_fields(self, template_api, sample_image_file):
+        """approve_template sets status=APPROVED, approved_by, approved_at."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        assert created.status == TemplateStatus.DRAFT
+
+        approved = template_api.approve_template(created.template_id, "admin-user")
+        assert approved.status == TemplateStatus.APPROVED
+        assert approved.approved_by == "admin-user"
+        assert approved.approved_at is not None
+
+    def test_approve_not_found(self, template_api):
+        """approve_template raises E_FORM_TEMPLATE_NOT_FOUND for nonexistent template."""
+        with pytest.raises(FormIngestException) as exc_info:
+            template_api.approve_template("nonexistent", "admin")
+        assert exc_info.value.code == FormErrorCode.E_FORM_TEMPLATE_NOT_FOUND
+
+    def test_approve_already_approved_raises(self, template_api, sample_image_file):
+        """Cannot approve a template that is already APPROVED."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        template_api.approve_template(created.template_id, "admin")
+
+        with pytest.raises(FormIngestException) as exc_info:
+            template_api.approve_template(created.template_id, "admin2")
+        assert exc_info.value.code == FormErrorCode.E_FORM_TEMPLATE_INVALID
+
+    def test_approve_archived_raises(self, template_api, sample_image_file):
+        """Cannot approve a template that is ARCHIVED."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        template_api.delete_template(created.template_id)
+
+        with pytest.raises(FormIngestException):
+            template_api.approve_template(created.template_id, "admin")
+
+
+@pytest.mark.unit
+class TestUpdateTemplateStatus:
+    """Tests for status transitions during update_template."""
+
+    def test_field_change_resets_to_draft(self, template_api, sample_image_file):
+        """Updating fields resets an APPROVED template back to DRAFT."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        template_api.approve_template(created.template_id, "admin")
+
+        new_fields = [
+            FieldMapping(
+                field_name="new_field",
+                field_label="New Field",
+                field_type=FieldType.TEXT,
+                page_number=0,
+                region=BoundingBox(x=0.1, y=0.1, width=0.3, height=0.05),
+            )
+        ]
+        update_req = FormTemplateUpdateRequest(fields=new_fields)
+        updated = template_api.update_template(created.template_id, update_req)
+
+        assert updated.status == TemplateStatus.DRAFT
+        assert updated.approved_by is None
+        assert updated.approved_at is None
+
+    def test_metadata_change_preserves_status(self, template_api, sample_image_file):
+        """Updating only name/description preserves APPROVED status."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        template_api.approve_template(created.template_id, "admin")
+
+        update_req = FormTemplateUpdateRequest(name="Renamed Template")
+        updated = template_api.update_template(created.template_id, update_req)
+
+        assert updated.status == TemplateStatus.APPROVED
+        assert updated.approved_by == "admin"
+        assert updated.approved_at is not None
+
+    def test_page_count_change_resets_to_draft(self, template_api, sample_image_file):
+        """Updating page_count resets status to DRAFT."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        template_api.approve_template(created.template_id, "admin")
+
+        update_req = FormTemplateUpdateRequest(page_count=3)
+        updated = template_api.update_template(created.template_id, update_req)
+
+        assert updated.status == TemplateStatus.DRAFT
+
+
+@pytest.mark.unit
+class TestCreateTemplateStatus:
+    """Tests for initial_status in create_template."""
+
+    def test_default_status_is_draft(self, template_api, sample_image_file):
+        """Templates are created with DRAFT status by default."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        assert created.status == TemplateStatus.DRAFT
+
+    def test_create_with_approved_status(self, template_api, sample_image_file):
+        """Templates can be created with initial_status='approved'."""
+        req = FormTemplateCreateRequest(
+            name="Pre-approved",
+            description="Test",
+            source_format=SourceFormat.PDF,
+            sample_file_path=sample_image_file,
+            page_count=1,
+            fields=[
+                FieldMapping(
+                    field_name="f1",
+                    field_label="F1",
+                    field_type=FieldType.TEXT,
+                    page_number=0,
+                    region=BoundingBox(x=0.1, y=0.1, width=0.3, height=0.05),
+                )
+            ],
+            initial_status="approved",
+        )
+        created = template_api.create_template(req)
+        assert created.status == TemplateStatus.APPROVED
+
+    def test_create_with_invalid_status_raises(self, template_api, sample_image_file):
+        """Invalid initial_status raises FormIngestException."""
+        req = FormTemplateCreateRequest(
+            name="Bad Status",
+            description="Test",
+            source_format=SourceFormat.PDF,
+            sample_file_path=sample_image_file,
+            page_count=1,
+            fields=[
+                FieldMapping(
+                    field_name="f1",
+                    field_label="F1",
+                    field_type=FieldType.TEXT,
+                    page_number=0,
+                    region=BoundingBox(x=0.1, y=0.1, width=0.3, height=0.05),
+                )
+            ],
+            initial_status="invalid_status",
+        )
+        with pytest.raises(FormIngestException) as exc_info:
+            template_api.create_template(req)
+        assert exc_info.value.code == FormErrorCode.E_FORM_TEMPLATE_INVALID
+
+
+@pytest.mark.unit
+class TestDeleteTemplateArchive:
+    """Tests for archive behavior in delete_template."""
+
+    def test_delete_sets_archived_status(self, template_api, sample_image_file):
+        """delete_template returns template with ARCHIVED status."""
+        created = template_api.create_template(
+            _make_create_request(sample_file_path=sample_image_file)
+        )
+        archived = template_api.delete_template(created.template_id)
+        assert archived is not None
+        assert archived.status == TemplateStatus.ARCHIVED
+
+    def test_delete_not_found_raises(self, template_api):
+        """delete_template raises E_FORM_TEMPLATE_NOT_FOUND for nonexistent template."""
+        with pytest.raises(FormIngestException) as exc_info:
+            template_api.delete_template("nonexistent-id")
+        assert exc_info.value.code == FormErrorCode.E_FORM_TEMPLATE_NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# Approved-only filtering tests (issue #99)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestApprovedOnlyFiltering:
+    """Tests for status-based filtering in list_templates and get_all_fingerprints."""
+
+    def test_list_templates_status_filter(self, template_api, sample_image_file):
+        """list_templates(status='approved') returns only approved templates."""
+        req1 = _make_create_request(
+            name="Draft Template", sample_file_path=sample_image_file
+        )
+        template_api.create_template(req1)
+
+        req2 = _make_create_request(
+            name="Approved Template", sample_file_path=sample_image_file
+        )
+        created2 = template_api.create_template(req2)
+        template_api.approve_template(created2.template_id, "admin")
+
+        all_templates = template_api.list_templates()
+        assert len(all_templates) == 2
+
+        approved_only = template_api.list_templates(status="approved")
+        assert len(approved_only) == 1
+        assert approved_only[0].name == "Approved Template"
+
+        draft_only = template_api.list_templates(status="draft")
+        assert len(draft_only) == 1
+        assert draft_only[0].name == "Draft Template"
+
+    def test_get_all_fingerprints_returns_approved_only(
+        self, mock_template_store, form_config, sample_image_file
+    ):
+        """get_all_fingerprints only returns approved templates."""
+        api = FormTemplateAPI(
+            store=mock_template_store, config=form_config, renderer=None
+        )
+
+        # Create two templates (both have fingerprints from sample_image_file)
+        req1 = _make_create_request(
+            name="Draft", sample_file_path=sample_image_file
+        )
+        api.create_template(req1)
+
+        req2 = _make_create_request(
+            name="Approved", sample_file_path=sample_image_file
+        )
+        created2 = api.create_template(req2)
+        api.approve_template(created2.template_id, "admin")
+
+        fingerprints = mock_template_store.get_all_fingerprints()
+        assert len(fingerprints) == 1
+        assert fingerprints[0][1] == "Approved"  # name is second element
+
+    def test_list_templates_no_status_filter(self, template_api, sample_image_file):
+        """list_templates() without status returns all active templates."""
+        req = _make_create_request(sample_file_path=sample_image_file)
+        created = template_api.create_template(req)
+        template_api.approve_template(created.template_id, "admin")
+
+        req2 = _make_create_request(
+            name="Another Draft", sample_file_path=sample_image_file
+        )
+        template_api.create_template(req2)
+
+        all_templates = template_api.list_templates()
+        assert len(all_templates) == 2

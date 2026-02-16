@@ -429,6 +429,7 @@ class TestFormMatcherMatchDocument:
             source_format=SourceFormat.PDF,
             layout_fingerprint=fp_concat,
             template_id="tmpl-1",
+            status="approved",
         )
         mock_template_store.save_template(tmpl)
 
@@ -479,6 +480,7 @@ class TestFormMatcherMatchDocument:
             source_format=SourceFormat.PDF,
             layout_fingerprint=exact_fp,
             template_id="tmpl-exact",
+            status="approved",
         )
 
         # Off-by-one template (similarity = 0.5 per cell) won't pass
@@ -495,6 +497,7 @@ class TestFormMatcherMatchDocument:
             source_format=SourceFormat.PDF,
             layout_fingerprint=mixed_fp,
             template_id="tmpl-mixed",
+            status="approved",
         )
 
         mock_template_store.save_template(tmpl_exact)
@@ -522,6 +525,7 @@ class TestFormMatcherMatchDocument:
             source_format=SourceFormat.PDF,
             layout_fingerprint=fp_concat,
             template_id="tmpl-fp-fail",
+            status="approved",
         )
         mock_template_store.save_template(tmpl)
 
@@ -545,6 +549,7 @@ class TestFormMatcherMatchDocument:
             source_format=SourceFormat.PDF,
             layout_fingerprint=good_fp,
             template_id="tmpl-good",
+            status="approved",
         )
 
         # Bad fingerprint: wrong length
@@ -553,6 +558,7 @@ class TestFormMatcherMatchDocument:
             source_format=SourceFormat.PDF,
             layout_fingerprint=bytes([0] * 100),  # not 320
             template_id="tmpl-bad",
+            status="approved",
         )
 
         mock_template_store.save_template(tmpl_good)

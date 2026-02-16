@@ -57,6 +57,14 @@ class DualWriteMode(str, Enum):
     STRICT_ATOMIC = "strict_atomic"
 
 
+class TemplateStatus(str, Enum):
+    """Lifecycle status of a form template."""
+
+    DRAFT = "draft"
+    APPROVED = "approved"
+    ARCHIVED = "archived"
+
+
 # ---------------------------------------------------------------------------
 # Template Models (spec section 5.1)
 # ---------------------------------------------------------------------------
@@ -126,6 +134,10 @@ class FieldMapping(BaseModel):
         description="Regex pattern for value validation.",
     )
     default_value: str | None = None
+    sensitive: bool = Field(
+        default=False,
+        description="Whether this field contains sensitive/PII data.",
+    )
     options: list[str] | None = Field(
         default=None,
         description="Valid options for CHECKBOX, RADIO, or DROPDOWN fields.",
@@ -211,6 +223,18 @@ class FormTemplate(BaseModel):
         description="User or system identifier that created this template.",
     )
     tenant_id: str | None = None
+    status: TemplateStatus = Field(
+        default=TemplateStatus.DRAFT,
+        description="Lifecycle status: draft, approved, or archived.",
+    )
+    approved_by: str | None = Field(
+        default=None,
+        description="User identifier who approved this template.",
+    )
+    approved_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when the template was approved.",
+    )
 
     @field_serializer("layout_fingerprint", "thumbnail")
     @classmethod
@@ -303,6 +327,10 @@ class ExtractedField(BaseModel):
         description="True if validation_pattern matched, False if failed, None if no pattern.",
     )
     warnings: list[str] = []
+    redacted: bool = Field(
+        default=False,
+        description="True if this field's value was redacted during output.",
+    )
 
 
 class FormExtractionResult(BaseModel):
@@ -461,6 +489,10 @@ class FormTemplateCreateRequest(BaseModel):
     fields: list[FieldMapping] = Field(min_length=1, max_length=200)
     tenant_id: str | None = None
     created_by: str = "system"
+    initial_status: str = Field(
+        default="draft",
+        description="Initial template status. Must be a valid TemplateStatus value.",
+    )
 
 
 class FormTemplateUpdateRequest(BaseModel):
@@ -497,6 +529,7 @@ __all__ = [
     "SourceFormat",
     "FieldType",
     "DualWriteMode",
+    "TemplateStatus",
     # Template
     "BoundingBox",
     "CellAddress",

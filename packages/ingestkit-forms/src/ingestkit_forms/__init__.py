@@ -59,6 +59,7 @@ from ingestkit_forms.models import (
     RollbackResult,
     SourceFormat,
     TemplateMatch,
+    TemplateStatus,
 )
 
 __all__: list[str] = [
@@ -72,6 +73,7 @@ __all__: list[str] = [
     "SourceFormat",
     "FieldType",
     "DualWriteMode",
+    "TemplateStatus",
     # Template models
     "BoundingBox",
     "CellAddress",
