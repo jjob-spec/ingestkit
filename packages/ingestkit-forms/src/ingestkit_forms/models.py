@@ -254,10 +254,20 @@ class TemplateMatch(BaseModel):
     template_id: str
     template_name: str
     template_version: int
+    source_format: SourceFormat = Field(
+        description="File format of the matched template (PDF, XLSX, or IMAGE).",
+    )
     confidence: float = Field(
         ge=0.0,
         le=1.0,
         description="Overall match confidence.",
+    )
+    page_alignment: dict = Field(
+        default_factory=dict,
+        description=(
+            "Window alignment info. Keys: 'window_start' (0-indexed page offset), "
+            "'template_pages', 'document_pages'."
+        ),
     )
     per_page_confidence: list[float] = Field(
         description="Per-page similarity scores.",
@@ -286,6 +296,13 @@ class FormIngestRequest(BaseModel):
     tenant_id: str | None = None
     source_uri: str | None = None
     metadata: dict[str, str] | None = None
+    manual_override: bool = Field(
+        default=False,
+        description=(
+            "When True, skip auto-matching and use template_id directly. "
+            "Requires template_id to be set."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

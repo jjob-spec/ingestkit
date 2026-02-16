@@ -529,9 +529,11 @@ class FormMatcher:
                 tmpl_pages = _deserialize_fingerprint(tmpl_fp, rows, cols)
             except ValueError:
                 logger.warning(
-                    "Skipping template %s v%d: invalid fingerprint",
-                    tmpl_id,
-                    tmpl_version,
+                    "forms.match.invalid_fingerprint",
+                    extra={
+                        "template_id": tmpl_id,
+                        "template_version": tmpl_version,
+                    },
                 )
                 continue
 
@@ -544,14 +546,20 @@ class FormMatcher:
             if result is None:
                 continue
 
-            confidence, per_page_scores, _window_start = result
+            confidence, per_page_scores, window_start = result
             if confidence >= _WARNING_FLOOR:
                 matches.append(
                     TemplateMatch(
                         template_id=tmpl_id,
                         template_name=tmpl_name,
                         template_version=tmpl_version,
+                        source_format=source_format,
                         confidence=confidence,
+                        page_alignment={
+                            "window_start": window_start,
+                            "template_pages": len(tmpl_pages),
+                            "document_pages": len(doc_pages),
+                        },
                         per_page_confidence=per_page_scores,
                         matched_features=["layout_grid"],
                     )

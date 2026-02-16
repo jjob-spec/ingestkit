@@ -101,6 +101,12 @@ class FormRouter:
                 config=self._config,
                 ocr_backend=ocr_backend,
             )
+        else:
+            logger.warning(
+                "%s: PDFWidgetBackend not provided — native PDF field "
+                "extraction will be unavailable",
+                FormErrorCode.W_FORM_NATIVE_FIELDS_UNAVAILABLE.value,
+            )
 
         self._ocr_extractor: OCROverlayExtractor | None = None
         if ocr_backend is not None:
@@ -144,9 +150,8 @@ class FormRouter:
         """
         if not self._config.form_match_enabled:
             logger.info(
-                "form_match stage=match template_candidates=0 "
-                "top_confidence=0.000 match_duration_ms=0.0 "
-                "match_result=fallthrough"
+                "forms.match.disabled",
+                extra={"template_candidates": 0, "confidence": 0.0},
             )
             return []
 
@@ -158,13 +163,14 @@ class FormRouter:
         match_result = "auto" if matches else "fallthrough"
 
         logger.info(
-            "form_match stage=match template_candidates=%d "
-            "top_confidence=%.3f match_duration_ms=%.1f "
-            "match_result=%s",
-            len(matches),
-            top_confidence,
-            duration_ms,
+            "forms.match.%s",
             match_result,
+            extra={
+                "template_candidates": len(matches),
+                "confidence": top_confidence,
+                "match_duration_ms": duration_ms,
+                "template_id": matches[0].template_id if matches else None,
+            },
         )
 
         return matches
@@ -172,7 +178,6 @@ class FormRouter:
     def try_match(
         self,
         file_path: str,
-        template_id: str | None = None,
         tenant_id: str | None = None,
     ) -> TemplateMatch | None:
         """Pipeline gate: probe whether a document matches a form template.
@@ -182,36 +187,20 @@ class FormRouter:
         BEFORE deciding to route to Path F vs. the standard pipeline.
 
         Semantics:
-            - If ``template_id`` is provided: resolve via manual override
-              and return a synthetic ``TemplateMatch`` with confidence 1.0.
-            - If auto-match: return the top match only when its confidence
-              is >= ``config.form_match_confidence_threshold`` (default 0.8).
+            - Runs auto-match via ``match_document(file_path, tenant_id)``.
+            - Returns the top match only when its confidence is >=
+              ``config.form_match_confidence_threshold`` (default 0.8).
             - On any exception: log a warning, return ``None`` (graceful
               fallthrough -- zero state mutation).
 
+        For manual template override, use ``extract_form()`` directly
+        with ``FormIngestRequest(template_id=..., manual_override=True)``.
+
         Returns:
-            ``TemplateMatch`` if a template was matched (or manually
-            specified), ``None`` otherwise.
+            ``TemplateMatch`` if a template was matched above threshold,
+            ``None`` otherwise.
         """
         try:
-            # Manual override path
-            if template_id is not None:
-                request = FormIngestRequest(
-                    file_path=file_path,
-                    template_id=template_id,
-                    tenant_id=tenant_id,
-                )
-                template = self._matcher.resolve_manual_override(request)
-                return TemplateMatch(
-                    template_id=template.template_id,
-                    template_name=template.name,
-                    template_version=template.version,
-                    confidence=1.0,
-                    per_page_confidence=[1.0] * template.page_count,
-                    matched_features=["manual_override"],
-                )
-
-            # Disabled matching with no manual template
             if not self._config.form_match_enabled:
                 return None
 
@@ -281,16 +270,19 @@ class FormRouter:
         match_confidence: float | None = None
         t_match = time.monotonic()
 
-        if request.template_id is not None:
-            # Manual override
+        if request.manual_override or request.template_id is not None:
+            # Manual override (explicit flag or template_id presence)
             template = self._matcher.resolve_manual_override(request)
             match_method = "manual_override"
             match_duration_ms = (time.monotonic() - t_match) * 1000.0
             logger.info(
-                "form_match stage=match template_candidates=1 "
-                "top_confidence=1.000 match_duration_ms=%.1f "
-                "match_result=manual",
-                match_duration_ms,
+                "forms.match.manual",
+                extra={
+                    "template_id": template.template_id,
+                    "template_version": template.version,
+                    "confidence": 1.0,
+                    "match_duration_ms": match_duration_ms,
+                },
             )
         else:
             # Auto-match
@@ -305,13 +297,14 @@ class FormRouter:
             match_result_str = "auto" if above_threshold else "fallthrough"
 
             logger.info(
-                "form_match stage=match template_candidates=%d "
-                "top_confidence=%.3f match_duration_ms=%.1f "
-                "match_result=%s",
-                len(matches),
-                top_conf,
-                match_duration_ms,
+                "forms.match.%s",
                 match_result_str,
+                extra={
+                    "template_candidates": len(matches),
+                    "confidence": top_conf,
+                    "match_duration_ms": match_duration_ms,
+                    "template_id": matches[0].template_id if matches else None,
+                },
             )
 
             if not above_threshold:
@@ -323,9 +316,11 @@ class FormRouter:
             )
             if template_obj is None:
                 logger.warning(
-                    "Matched template %s v%d not found in store",
-                    best.template_id,
-                    best.template_version,
+                    "forms.match.template_not_found",
+                    extra={
+                        "template_id": best.template_id,
+                        "template_version": best.template_version,
+                    },
                 )
                 return None
             template = template_obj
@@ -351,24 +346,27 @@ class FormRouter:
         # Structured extract-stage logging per spec 18.4
         fields_failed = sum(1 for f in fields if f.value is None)
         logger.info(
-            "form_extract stage=extract template_id=%s template_version=%d "
-            "fields_extracted=%d fields_failed=%d extraction_method=%s "
-            "extract_duration_ms=%.1f",
-            template.template_id,
-            template.version,
-            len(fields) - fields_failed,
-            fields_failed,
-            extraction_method,
-            extraction_duration * 1000.0,
+            "forms.extract.completed",
+            extra={
+                "template_id": template.template_id,
+                "template_version": template.version,
+                "extraction_method": extraction_method,
+                "duration_s": extraction_duration,
+                "field_count": len(fields),
+                "fields_extracted": len(fields) - fields_failed,
+                "fields_failed": fields_failed,
+            },
         )
 
         # Step 8: Fail-closed check
         if overall_confidence < cfg.form_extraction_min_overall_confidence:
-            logger.info(
-                "Extraction confidence %.3f below threshold %.3f for '%s'",
-                overall_confidence,
-                cfg.form_extraction_min_overall_confidence,
-                request.file_path,
+            logger.warning(
+                "forms.extract.low_confidence",
+                extra={
+                    "template_id": template.template_id,
+                    "overall_confidence": overall_confidence,
+                    "threshold": cfg.form_extraction_min_overall_confidence,
+                },
             )
             extraction_result = self._build_extraction_result(
                 template=template,

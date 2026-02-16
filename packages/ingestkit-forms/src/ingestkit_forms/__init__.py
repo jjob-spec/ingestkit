@@ -20,6 +20,7 @@ from ingestkit_forms.matcher import (
 )
 from ingestkit_forms.protocols import (
     EmbeddingBackend,
+    FormDBBackend,
     FormTemplateStore,
     LayoutFingerprinter,
     OCRBackend,
@@ -37,7 +38,11 @@ from ingestkit_forms.idempotency import (
     compute_vector_point_id,
 )
 from ingestkit_forms.router import FormRouter, create_default_router
-from ingestkit_forms.security import FormSecurityScanner, regex_match_with_timeout
+from ingestkit_forms.security import (
+    FormSecurityScanner,
+    regex_match_with_timeout,
+    validate_table_name,
+)
 from ingestkit_forms.stores import FileSystemTemplateStore
 from ingestkit_forms.models import (
     BoundingBox,
@@ -97,6 +102,7 @@ __all__: list[str] = [
     "FormTemplateUpdateRequest",
     "ExtractionPreview",
     # Protocols (from issue #60)
+    "FormDBBackend",
     "FormTemplateStore",
     "OCRBackend",
     "PDFWidgetBackend",
@@ -133,6 +139,7 @@ __all__: list[str] = [
     # Security (from issue #70)
     "FormSecurityScanner",
     "regex_match_with_timeout",
+    "validate_table_name",
     # Router (from issue #69)
     "FormRouter",
     "create_default_router",

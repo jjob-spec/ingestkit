@@ -80,8 +80,27 @@ def slugify_template_name(name: str) -> str:
 
 
 def get_table_name(config: FormProcessorConfig, template: FormTemplate) -> str:
-    """Return the DB table name for a given template."""
-    return f"{config.form_db_table_prefix}{slugify_template_name(template.name)}"
+    """Return the DB table name for a given template.
+
+    Raises FormIngestException if the generated name is not a safe SQL identifier.
+    """
+    from ingestkit_forms.security import validate_table_name
+
+    table_name = f"{config.form_db_table_prefix}{slugify_template_name(template.name)}"
+
+    error = validate_table_name(table_name)
+    if error is not None:
+        raise FormIngestException(
+            code=FormErrorCode.E_FORM_TEMPLATE_INVALID,
+            message=(
+                f"Generated table name '{table_name}' is not a safe SQL identifier: "
+                f"{error}. Template: '{template.name}', prefix: '{config.form_db_table_prefix}'"
+            ),
+            stage="output",
+            recoverable=False,
+        )
+
+    return table_name
 
 
 def generate_table_schema(template: FormTemplate) -> dict[str, str]:
@@ -174,7 +193,14 @@ class FormDBWriter:
             )
             sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({columns_sql})"
             self._db.execute_sql(sql)
-            logger.debug("Created table %s for template %s", table_name, template.name)
+            logger.info(
+                "forms.write.table_created",
+                extra={
+                    "table_name": table_name,
+                    "template_id": template.template_id,
+                    "template_name": template.name,
+                },
+            )
 
         return table_name
 
@@ -206,9 +232,12 @@ class FormDBWriter:
 
             if added:
                 logger.warning(
-                    "W_FORM_SCHEMA_EVOLVED: Table %s evolved, added columns: %s",
-                    table_name,
-                    added,
+                    "forms.write.schema_evolved",
+                    extra={
+                        "table_name": table_name,
+                        "columns_added": added,
+                        "column_count": len(added),
+                    },
                 )
 
             return added
@@ -254,12 +283,14 @@ class FormDBWriter:
                 if attempt < max_attempts - 1:
                     sleep_time = self._config.backend_backoff_base * (2 ** attempt)
                     logger.warning(
-                        "DB write attempt %d/%d failed for %s: %s. Retrying in %.1fs.",
-                        attempt + 1,
-                        max_attempts,
-                        table_name,
-                        exc,
-                        sleep_time,
+                        "forms.write.db_retry",
+                        extra={
+                            "table_name": table_name,
+                            "attempt": attempt + 1,
+                            "max_attempts": max_attempts,
+                            "retry_delay_s": sleep_time,
+                            "error": str(exc),
+                        },
                     )
                     time.sleep(sleep_time)
 
