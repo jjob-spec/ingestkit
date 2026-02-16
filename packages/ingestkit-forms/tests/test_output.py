@@ -669,6 +669,59 @@ class TestRedaction:
         # Original should be unchanged
         assert extraction.fields[0].value == "SSN: 123-45-6789"
 
+    @pytest.mark.unit
+    def test_redacted_flag_set_on_match(self, output_config):
+        output_config.redact_patterns = [r"\d{3}-\d{2}-\d{4}"]
+        output_config.redact_target = "both"
+        fields = [make_extracted_field(value="SSN: 123-45-6789")]
+        extraction = make_extraction_result(fields=fields)
+
+        result = redact_extraction(extraction, output_config, "db")
+        assert result.fields[0].redacted is True
+
+    @pytest.mark.unit
+    def test_redacted_flag_not_set_when_no_match(self, output_config):
+        output_config.redact_patterns = [r"\d{3}-\d{2}-\d{4}"]
+        output_config.redact_target = "both"
+        fields = [make_extracted_field(value="John Doe")]
+        extraction = make_extraction_result(fields=fields)
+
+        result = redact_extraction(extraction, output_config, "db")
+        assert result.fields[0].redacted is False
+
+    @pytest.mark.unit
+    def test_raw_value_redacted_on_match(self, output_config):
+        output_config.redact_patterns = [r"\d{3}-\d{2}-\d{4}"]
+        output_config.redact_target = "both"
+        fields = [
+            ExtractedField(
+                field_id="f1",
+                field_name="ssn",
+                field_label="SSN",
+                field_type=FieldType.TEXT,
+                value="123-45-6789",
+                raw_value="123-45-6789",
+                confidence=0.9,
+                extraction_method="ocr_overlay",
+            )
+        ]
+        extraction = make_extraction_result(fields=fields)
+
+        result = redact_extraction(extraction, output_config, "db")
+        assert result.fields[0].raw_value == "[REDACTED]"
+        assert result.fields[0].redacted is True
+
+    @pytest.mark.unit
+    def test_raw_value_none_stays_none(self, output_config):
+        output_config.redact_patterns = [r"\d{3}-\d{2}-\d{4}"]
+        output_config.redact_target = "both"
+        fields = [make_extracted_field(value="SSN: 123-45-6789")]
+        extraction = make_extraction_result(fields=fields)
+
+        result = redact_extraction(extraction, output_config, "db")
+        assert result.fields[0].raw_value is None
+        assert result.fields[0].redacted is True
+
 
 class TestRollback:
     @pytest.mark.unit

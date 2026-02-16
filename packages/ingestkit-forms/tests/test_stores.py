@@ -11,6 +11,7 @@ from ingestkit_forms.models import (
     FieldType,
     FormTemplate,
     SourceFormat,
+    TemplateStatus,
 )
 from ingestkit_forms.protocols import FormTemplateStore
 from ingestkit_forms.stores.filesystem import FileSystemTemplateStore
@@ -24,6 +25,7 @@ def _make_template(
     page_count: int = 1,
     tenant_id: str | None = "tenant-a",
     layout_fingerprint: bytes | None = None,
+    status: TemplateStatus = TemplateStatus.DRAFT,
 ) -> FormTemplate:
     """Factory for FormTemplate test instances."""
     return FormTemplate(
@@ -43,6 +45,7 @@ def _make_template(
         ],
         tenant_id=tenant_id,
         layout_fingerprint=layout_fingerprint,
+        status=status,
     )
 
 
@@ -199,12 +202,14 @@ class TestFileSystemTemplateStore:
             _make_template(
                 template_id="tmpl-001",
                 layout_fingerprint=b"\x00\x01\x02\x03",
+                status=TemplateStatus.APPROVED,
             )
         )
         store.save_template(
             _make_template(
                 template_id="tmpl-002",
                 layout_fingerprint=None,
+                status=TemplateStatus.APPROVED,
             )
         )
 
@@ -222,6 +227,7 @@ class TestFileSystemTemplateStore:
                 template_id="tmpl-001",
                 tenant_id="tenant-a",
                 layout_fingerprint=b"\x00\x01",
+                status=TemplateStatus.APPROVED,
             )
         )
         store.save_template(
@@ -229,6 +235,7 @@ class TestFileSystemTemplateStore:
                 template_id="tmpl-002",
                 tenant_id="tenant-b",
                 layout_fingerprint=b"\x02\x03",
+                status=TemplateStatus.APPROVED,
             )
         )
 

@@ -194,6 +194,7 @@ class MockFormTemplateStore:
         tenant_id: str | None = None,
         source_format: str | None = None,
         active_only: bool = True,
+        status: str | None = None,
     ) -> list[FormTemplate]:
         results: list[FormTemplate] = []
         for tid in self._templates:
@@ -205,6 +206,8 @@ class MockFormTemplateStore:
             if tenant_id is not None and template.tenant_id != tenant_id:
                 continue
             if source_format is not None and template.source_format.value != source_format:
+                continue
+            if status is not None and template.status.value != status:
                 continue
             results.append(template)
         return results
@@ -248,6 +251,7 @@ class MockFormTemplateStore:
             tenant_id=tenant_id,
             source_format=source_format,
             active_only=True,
+            status="approved",
         )
         results: list[tuple[str, str, int, bytes]] = []
         for t in templates:
@@ -566,6 +570,7 @@ def make_template(
     template_id: str | None = None,
     tenant_id: str | None = None,
     version: int = 1,
+    status: str | None = None,
 ) -> FormTemplate:
     """Factory for FormTemplate test instances."""
     if fields is None:
@@ -582,6 +587,8 @@ def make_template(
         kwargs["template_id"] = template_id
     if tenant_id is not None:
         kwargs["tenant_id"] = tenant_id
+    if status is not None:
+        kwargs["status"] = status
     return FormTemplate(**kwargs)
 
 

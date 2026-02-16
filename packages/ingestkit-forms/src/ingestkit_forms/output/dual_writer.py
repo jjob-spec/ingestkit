@@ -72,7 +72,12 @@ def redact_extraction(
 
     for field in redacted.fields:
         if isinstance(field.value, str):
-            field.value = apply_redaction(field.value, compiled)
+            new_value = apply_redaction(field.value, compiled)
+            if new_value != field.value:
+                field.value = new_value
+                field.redacted = True
+                if field.raw_value is not None:
+                    field.raw_value = "[REDACTED]"
 
     return redacted
 

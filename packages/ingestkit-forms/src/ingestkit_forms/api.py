@@ -25,6 +25,7 @@ from ingestkit_forms.models import (
     FormTemplateCreateRequest,
     FormTemplateUpdateRequest,
     TemplateMatch,
+    TemplateStatus,
 )
 
 if TYPE_CHECKING:
@@ -125,6 +126,21 @@ class FormTemplateAPI:
             )
 
         now = datetime.now(timezone.utc)
+
+        # Validate and apply initial status
+        try:
+            initial_status = TemplateStatus(template_def.initial_status)
+        except ValueError:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_TEMPLATE_INVALID,
+                message=(
+                    f"Invalid initial_status '{template_def.initial_status}'. "
+                    f"Must be one of: {', '.join(s.value for s in TemplateStatus)}"
+                ),
+                stage="api",
+                recoverable=False,
+            )
+
         template = FormTemplate(
             template_id=template_id,
             name=template_def.name,
@@ -138,6 +154,7 @@ class FormTemplateAPI:
             updated_at=now,
             created_by=template_def.created_by,
             tenant_id=template_def.tenant_id,
+            status=initial_status,
         )
 
         self._store.save_template(template)
@@ -213,6 +230,23 @@ class FormTemplateAPI:
                     exc,
                 )
 
+        # Determine if this is a field/structural change (requires re-approval)
+        # or a metadata-only change (name/description -- preserves status)
+        has_field_changes = (
+            template_def.fields is not None
+            or template_def.page_count is not None
+            or template_def.sample_file_path is not None
+        )
+
+        if has_field_changes:
+            new_status = TemplateStatus.DRAFT
+            new_approved_by = None
+            new_approved_at = None
+        else:
+            new_status = existing.status
+            new_approved_by = existing.approved_by
+            new_approved_at = existing.approved_at
+
         now = datetime.now(timezone.utc)
         updated = FormTemplate(
             template_id=template_id,
@@ -228,6 +262,9 @@ class FormTemplateAPI:
             updated_at=now,
             created_by=existing.created_by,
             tenant_id=existing.tenant_id,
+            status=new_status,
+            approved_by=new_approved_by,
+            approved_at=new_approved_at,
         )
 
         self._store.save_template(updated)
@@ -243,15 +280,125 @@ class FormTemplateAPI:
         self,
         template_id: str,
         version: int | None = None,
-    ) -> None:
-        """Soft-delete a template or specific version.
+    ) -> FormTemplate:
+        """Soft-delete a template by setting status to ARCHIVED.
 
-        Delegates to store.delete_template(). Raises if template not found.
+        Fetches the template, sets status to ARCHIVED, saves it, then
+        delegates to store.delete_template() for bookkeeping.
+
+        Returns:
+            The archived FormTemplate.
+
+        Raises:
+            FormIngestException: E_FORM_TEMPLATE_NOT_FOUND if not found.
         """
-        self._store.delete_template(template_id, version)
-        logger.info(
-            "Deleted template %s (version=%s)", template_id, version or "all"
+        existing = self._store.get_template(template_id, version)
+        if existing is None:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_TEMPLATE_NOT_FOUND,
+                message=f"Template '{template_id}' version {version or 'latest'} not found",
+                stage="api",
+                recoverable=False,
+            )
+
+        # Archive: update status to ARCHIVED
+        now = datetime.now(timezone.utc)
+        archived = FormTemplate(
+            template_id=existing.template_id,
+            name=existing.name,
+            description=existing.description,
+            version=existing.version,
+            source_format=existing.source_format,
+            page_count=existing.page_count,
+            fields=existing.fields,
+            layout_fingerprint=existing.layout_fingerprint,
+            thumbnail=existing.thumbnail,
+            created_at=existing.created_at,
+            updated_at=now,
+            created_by=existing.created_by,
+            tenant_id=existing.tenant_id,
+            status=TemplateStatus.ARCHIVED,
+            approved_by=existing.approved_by,
+            approved_at=existing.approved_at,
         )
+        self._store.save_template(archived)
+
+        # Delegate to store's delete for bookkeeping
+        self._store.delete_template(template_id, version)
+
+        logger.info(
+            "Archived template %s (version=%s)", template_id, version or "all"
+        )
+        return archived
+
+    def approve_template(
+        self,
+        template_id: str,
+        approved_by: str,
+    ) -> FormTemplate:
+        """Approve a template, setting status to APPROVED.
+
+        Only templates in DRAFT status can be approved.
+
+        Args:
+            template_id: ID of the template to approve.
+            approved_by: User identifier performing the approval.
+
+        Returns:
+            The approved FormTemplate.
+
+        Raises:
+            FormIngestException: E_FORM_TEMPLATE_NOT_FOUND if not found.
+            FormIngestException: E_FORM_TEMPLATE_INVALID if not in DRAFT status.
+        """
+        existing = self._store.get_template(template_id)
+        if existing is None:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_TEMPLATE_NOT_FOUND,
+                message=f"Template '{template_id}' not found",
+                stage="api",
+                recoverable=False,
+            )
+
+        if existing.status != TemplateStatus.DRAFT:
+            raise FormIngestException(
+                code=FormErrorCode.E_FORM_TEMPLATE_INVALID,
+                message=(
+                    f"Template '{template_id}' cannot be approved: "
+                    f"current status is '{existing.status.value}', expected 'draft'"
+                ),
+                stage="api",
+                recoverable=False,
+            )
+
+        now = datetime.now(timezone.utc)
+        approved = FormTemplate(
+            template_id=existing.template_id,
+            name=existing.name,
+            description=existing.description,
+            version=existing.version,
+            source_format=existing.source_format,
+            page_count=existing.page_count,
+            fields=existing.fields,
+            layout_fingerprint=existing.layout_fingerprint,
+            thumbnail=existing.thumbnail,
+            created_at=existing.created_at,
+            updated_at=now,
+            created_by=existing.created_by,
+            tenant_id=existing.tenant_id,
+            status=TemplateStatus.APPROVED,
+            approved_by=approved_by,
+            approved_at=now,
+        )
+        self._store.save_template(approved)
+
+        logger.info(
+            "Approved template '%s' (id=%s) by '%s'",
+            approved.name,
+            template_id,
+            approved_by,
+        )
+        return approved
 
     def get_template(
         self,
@@ -280,8 +427,9 @@ class FormTemplateAPI:
         self,
         tenant_id: str | None = None,
         source_format: str | None = None,
+        status: str | None = None,
     ) -> list[FormTemplate]:
-        """List all active templates, optionally filtered by tenant and format.
+        """List all active templates, optionally filtered by tenant, format, and status.
 
         Returns the latest version of each template.
         """
@@ -289,6 +437,7 @@ class FormTemplateAPI:
             tenant_id=tenant_id,
             source_format=source_format,
             active_only=True,
+            status=status,
         )
 
     def list_template_versions(

@@ -32,6 +32,7 @@ from ingestkit_forms.models import (
     RollbackResult,
     SourceFormat,
     TemplateMatch,
+    TemplateStatus,
 )
 
 # ---------------------------------------------------------------------------
@@ -139,6 +140,17 @@ class TestDualWriteMode:
         assert len(DualWriteMode) == 2
 
 
+@pytest.mark.unit
+class TestTemplateStatus:
+    def test_values_are_lowercase(self) -> None:
+        assert TemplateStatus.DRAFT.value == "draft"
+        assert TemplateStatus.APPROVED.value == "approved"
+        assert TemplateStatus.ARCHIVED.value == "archived"
+
+    def test_member_count(self) -> None:
+        assert len(TemplateStatus) == 3
+
+
 # ---------------------------------------------------------------------------
 # BoundingBox Tests
 # ---------------------------------------------------------------------------
@@ -205,6 +217,14 @@ class TestFieldMapping:
         fm = _make_field_mapping()
         uuid.UUID(fm.field_id)  # Should not raise
 
+    def test_sensitive_default_false(self) -> None:
+        fm = _make_field_mapping()
+        assert fm.sensitive is False
+
+    def test_sensitive_true(self) -> None:
+        fm = _make_field_mapping(sensitive=True)
+        assert fm.sensitive is True
+
 
 # ---------------------------------------------------------------------------
 # FormTemplate Tests
@@ -262,6 +282,18 @@ class TestFormTemplate:
         data = t.model_dump(mode="json")
         assert data["layout_fingerprint"] is None
         assert data["thumbnail"] is None
+
+    def test_status_defaults_to_draft(self) -> None:
+        field = _make_field_mapping()
+        t = FormTemplate(
+            name="Test",
+            source_format=SourceFormat.PDF,
+            page_count=1,
+            fields=[field],
+        )
+        assert t.status == TemplateStatus.DRAFT
+        assert t.approved_by is None
+        assert t.approved_at is None
 
     def test_datetime_is_utc(self) -> None:
         field = _make_field_mapping()
@@ -339,6 +371,14 @@ class TestExtractedField:
     def test_warnings_default_empty(self) -> None:
         ef = _make_extracted_field()
         assert ef.warnings == []
+
+    def test_redacted_default_false(self) -> None:
+        ef = _make_extracted_field()
+        assert ef.redacted is False
+
+    def test_redacted_true(self) -> None:
+        ef = _make_extracted_field(redacted=True)
+        assert ef.redacted is True
 
 
 @pytest.mark.unit
@@ -492,6 +532,17 @@ class TestFormTemplateCreateRequest:
         )
         assert req.created_by == "system"
         assert req.tenant_id is None
+
+    def test_initial_status_default(self) -> None:
+        field = _make_field_mapping()
+        req = FormTemplateCreateRequest(
+            name="Test",
+            source_format=SourceFormat.PDF,
+            sample_file_path="/tmp/sample.pdf",
+            page_count=1,
+            fields=[field],
+        )
+        assert req.initial_status == "draft"
 
     def test_fields_min_length(self) -> None:
         with pytest.raises(Exception):  # noqa: B017
