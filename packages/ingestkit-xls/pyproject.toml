@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ingestkit-xls"
+version = "0.1.0"
+description = "Legacy Excel (.xls) document converter for RAG pipelines"
+requires-python = ">=3.10"
+dependencies = [
+    "ingestkit-core>=0.1.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+xlrd = ["xlrd>=2.0.1"]
+qdrant = ["qdrant-client>=1.7"]
+ollama = ["httpx>=0.27"]
+all = ["ingestkit-xls[xlrd,qdrant,ollama]"]
+dev = [
+    "xlrd>=2.0.1",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests (no external services)",
+    "integration: Integration tests (require external services)",
+]
