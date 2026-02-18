@@ -160,7 +160,7 @@ def compute_layout_fingerprint(
                 bottom = int((r + 1) * cell_h)
 
                 cell = binary.crop((left, top, right, bottom))
-                cell_data = cell.get_flattened_data()
+                cell_data = cell.tobytes()
                 total = cell.size[0] * cell.size[1]
                 dark_count = sum(1 for p in cell_data if p == 0)
 
