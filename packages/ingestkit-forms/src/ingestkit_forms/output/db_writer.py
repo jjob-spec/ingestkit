@@ -28,6 +28,18 @@ from ingestkit_forms.protocols import FormDBBackend
 logger = logging.getLogger("ingestkit_forms")
 
 
+def _quote_ident(name: str) -> str:
+    """Double-quote a SQL identifier, escaping internal double-quotes.
+
+    Square-bracket quoting cannot handle identifiers that contain literal
+    ``]`` characters (e.g. AcroForm field names like ``F[0].P1[0].Name``).
+    Double-quote quoting works for all characters; any embedded ``"`` is
+    escaped by doubling it (``""``) per the SQL standard.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -189,9 +201,9 @@ class FormDBWriter:
         else:
             schema = generate_table_schema(template)
             columns_sql = ", ".join(
-                f"[{col}] {col_type}" for col, col_type in schema.items()
+                f"{_quote_ident(col)} {col_type}" for col, col_type in schema.items()
             )
-            sql = f"CREATE TABLE IF NOT EXISTS [{table_name}] ({columns_sql})"
+            sql = f"CREATE TABLE IF NOT EXISTS {_quote_ident(table_name)} ({columns_sql})"
             self._db.execute_sql(sql)
             logger.info(
                 "forms.write.table_created",
@@ -224,8 +236,8 @@ class FormDBWriter:
                 if field.field_name not in existing_columns:
                     sql_type = FIELD_TYPE_TO_SQL.get(field.field_type, "TEXT")
                     alter_sql = (
-                        f"ALTER TABLE [{table_name}] "
-                        f"ADD COLUMN [{field.field_name}] {sql_type}"
+                        f"ALTER TABLE {_quote_ident(table_name)} "
+                        f"ADD COLUMN {_quote_ident(field.field_name)} {sql_type}"
                     )
                     self._db.execute_sql(alter_sql)
                     added.append(field.field_name)
@@ -267,8 +279,8 @@ class FormDBWriter:
         row = build_row_dict(extraction, self._config, ingest_key, ingest_run_id)
         columns = list(row.keys())
         placeholders = ", ".join("?" for _ in columns)
-        columns_sql = ", ".join(f"[{col}]" for col in columns)
-        sql = f"INSERT OR REPLACE INTO [{table_name}] ({columns_sql}) VALUES ({placeholders})"
+        columns_sql = ", ".join(_quote_ident(col) for col in columns)
+        sql = f"INSERT OR REPLACE INTO {_quote_ident(table_name)} ({columns_sql}) VALUES ({placeholders})"
         params = tuple(row[col] for col in columns)
 
         max_attempts = self._config.backend_max_retries + 1
