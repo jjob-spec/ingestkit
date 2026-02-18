@@ -1,6 +1,6 @@
-"""Configuration model for the ingestkit-image pipeline.
+"""Configuration model for the ingestkit-rtf pipeline.
 
-Provides ``ImageProcessorConfig`` with all tunable parameters and sensible
+Provides ``RTFProcessorConfig`` with all tunable parameters and sensible
 defaults.  Supports loading overrides from YAML or JSON files via the
 ``from_file()`` classmethod.
 """
@@ -13,37 +13,24 @@ import pathlib
 from pydantic import BaseModel
 
 
-class ImageProcessorConfig(BaseModel):
-    """All tunable parameters with sensible defaults.
-
-    Override individual values via constructor kwargs or load a complete
-    config from a file with ``ImageProcessorConfig.from_file(path)``.
-    """
+class RTFProcessorConfig(BaseModel):
+    """All tunable parameters with sensible defaults for RTF ingestion."""
 
     # --- Identity ---
-    parser_version: str = "ingestkit_image:1.0.0"
+    parser_version: str = "ingestkit_rtf:1.0.0"
     tenant_id: str | None = None
 
     # --- Security / Resource Limits ---
-    max_file_size_mb: int = 50
-    max_image_width: int = 10000
-    max_image_height: int = 10000
-    supported_formats: list[str] = ["jpeg", "png", "tiff", "webp", "bmp", "gif"]
+    max_file_size_mb: int = 100
 
-    # --- VLM Settings ---
-    vision_model: str = "llama3.2-vision:11b"
-    caption_prompt: str = (
-        "Describe this image in detail for search indexing. "
-        "Include key objects, text, colors, layout, and context."
-    )
-    vlm_temperature: float = 0.3
-    vlm_timeout_seconds: int = 30
-    vlm_max_retries: int = 1
-    min_caption_length: int = 10
+    # --- Chunking ---
+    chunk_size_tokens: int = 512
+    chunk_overlap_tokens: int = 50
 
     # --- Embedding ---
     embedding_model: str = "nomic-embed-text"
     embedding_dimension: int = 768
+    embedding_batch_size: int = 64
 
     # --- Vector Store ---
     default_collection: str = "helpdesk"
@@ -51,24 +38,13 @@ class ImageProcessorConfig(BaseModel):
     # --- Backend Resilience ---
     backend_timeout_seconds: float = 30.0
     backend_max_retries: int = 2
-    backend_backoff_base: float = 1.0
-
-    # --- OCR Settings ---
-    enable_ocr: bool = False
-    ocr_language: str = "eng"  # Tesseract language code
-    ocr_config: str | None = None  # e.g., "--psm 1 --oem 3"
-    ocr_timeout_seconds: float = 60.0  # OCR can be slow on large images
-    ocr_max_dimension: int = 4096  # Resize if any side exceeds this
-    ocr_megapixel_threshold: float = 20.0  # Resize trigger (megapixels)
-    ocr_min_text_length: int = 3  # Below this, warn low confidence
-    ocr_max_retries: int = 1
 
     # --- Logging / PII Safety ---
     log_sample_data: bool = False
-    log_captions: bool = False
+    redact_patterns: list[str] = []
 
     @classmethod
-    def from_file(cls, path: str) -> ImageProcessorConfig:
+    def from_file(cls, path: str) -> RTFProcessorConfig:
         """Load configuration from a YAML or JSON file.
 
         File format is detected by extension: ``.yaml`` / ``.yml`` for YAML,

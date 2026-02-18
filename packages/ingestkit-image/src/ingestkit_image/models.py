@@ -55,7 +55,11 @@ class ImageMetadata(BaseModel):
 
 
 class ImageChunkMetadata(BaseChunkMetadata):
-    """Chunk metadata for image captions. Extends core BaseChunkMetadata."""
+    """Chunk metadata for image captions and OCR text.
+
+    ``source_type`` distinguishes between VLM captions (``"image_caption"``)
+    and OCR-extracted text (``"image_ocr_text"``).
+    """
 
     source_format: str = "image"
     source_type: str = "image_caption"
@@ -64,6 +68,9 @@ class ImageChunkMetadata(BaseChunkMetadata):
     image_height: int | None = None
     vlm_model: str | None = None
     caption_prompt: str | None = None
+    ocr_engine: str | None = None
+    ocr_confidence: float | None = None
+    ocr_language: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +84,19 @@ class CaptionResult(BaseModel):
     caption: str
     model_used: str
     caption_duration_seconds: float
+
+
+class OCRTextResult(BaseModel):
+    """Output of the OCR text extraction stage."""
+
+    text: str
+    confidence: float
+    engine: str
+    language: str
+    ocr_duration_seconds: float
+    was_resized: bool = False
+    original_dimensions: tuple[int, int] | None = None
+    ocr_dimensions: tuple[int, int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +113,7 @@ class ImageProcessingResult(BaseModel):
     tenant_id: str | None = None
     image_metadata: ImageMetadata | None = None
     caption_result: CaptionResult | None = None
+    ocr_result: OCRTextResult | None = None
     embed_result: EmbedStageResult | None = None
     chunks_created: int
     written: WrittenArtifacts
@@ -108,6 +129,7 @@ __all__ = [
     "ImageMetadata",
     "ImageChunkMetadata",
     "CaptionResult",
+    "OCRTextResult",
     "ImageProcessingResult",
     "BaseChunkMetadata",
     "ChunkPayload",

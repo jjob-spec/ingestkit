@@ -3,20 +3,18 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ingestkit-image"
+name = "ingestkit-xml"
 version = "0.1.0"
-description = "VLM-based image captioning for RAG indexing"
+description = "XML document converter for RAG pipelines"
 requires-python = ">=3.10"
 dependencies = [
     "ingestkit-core>=0.1.0",
     "pydantic>=2.0",
-    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
-ollama = ["httpx>=0.27"]
 qdrant = ["qdrant-client>=1.7"]
-ocr = ["pytesseract>=0.3.10"]
+ollama = ["httpx>=0.27"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

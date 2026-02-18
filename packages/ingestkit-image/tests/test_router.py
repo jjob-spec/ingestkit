@@ -6,6 +6,7 @@ import pytest
 
 from ingestkit_image.config import ImageProcessorConfig
 from ingestkit_image.errors import ImageErrorCode
+from ingestkit_image.protocols import OCRResult
 from ingestkit_image.router import ImageRouter
 
 
@@ -252,3 +253,221 @@ class TestImageRouterProcess:
     def test_default_config_used_when_none(self):
         router = ImageRouter(_MockVLM(), _MockVectorStore(), _MockEmbedder(), config=None)
         assert router._config.vision_model == "llama3.2-vision:11b"
+
+
+# ---------------------------------------------------------------------------
+# OCR-related mock
+# ---------------------------------------------------------------------------
+
+
+class _MockOCR:
+    """Inline mock OCR backend for router tests."""
+
+    def __init__(
+        self,
+        ocr_text: str = "OCR extracted text from image.",
+        confidence: float = 0.92,
+        engine: str = "tesseract",
+        language: str = "eng",
+        raise_on_ocr: Exception | None = None,
+    ) -> None:
+        self._ocr_text = ocr_text
+        self._confidence = confidence
+        self._engine = engine
+        self._language = language
+        self._raise_on_ocr = raise_on_ocr
+        self.ocr_calls: list[dict] = []
+
+    def ocr_image(self, image_bytes, language="en", config=None, timeout=None) -> OCRResult:
+        self.ocr_calls.append({
+            "image_bytes_len": len(image_bytes),
+            "language": language,
+            "config": config,
+            "timeout": timeout,
+        })
+        if self._raise_on_ocr is not None:
+            raise self._raise_on_ocr
+        return OCRResult(
+            text=self._ocr_text,
+            confidence=self._confidence,
+            engine=self._engine,
+            language=self._language,
+        )
+
+    def engine_name(self) -> str:
+        return self._engine
+
+
+# ---------------------------------------------------------------------------
+# Dual-mode router tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestImageRouterOCROnly:
+    """Test ImageRouter in OCR-only mode (no VLM)."""
+
+    def test_ocr_only_happy_path(self, sample_image_path):
+        vs = _MockVectorStore()
+        ocr = _MockOCR(ocr_text="Hello from OCR extraction.")
+        config = ImageProcessorConfig(enable_ocr=True)
+        router = ImageRouter(
+            vlm=None,
+            vector_store=vs,
+            embedder=_MockEmbedder(),
+            ocr=ocr,
+            config=config,
+        )
+
+        result = router.process(sample_image_path)
+
+        assert result.chunks_created == 1
+        assert result.ocr_result is not None
+        assert result.ocr_result.text == "Hello from OCR extraction."
+        assert result.caption_result is None
+        assert len(result.errors) == 0
+        assert len(vs.upserted) == 1
+        assert vs.upserted[0].metadata.source_type == "image_ocr_text"
+
+    def test_ocr_only_requires_enable_ocr_config(self, sample_image_path):
+        """If enable_ocr is False, OCR won't run even with backend provided."""
+        vs = _MockVectorStore()
+        ocr = _MockOCR()
+        config = ImageProcessorConfig(enable_ocr=False)
+        router = ImageRouter(
+            vlm=None,
+            vector_store=vs,
+            embedder=_MockEmbedder(),
+            ocr=ocr,
+            config=config,
+        )
+
+        result = router.process(sample_image_path)
+
+        # No texts to embed -> 0 chunks
+        assert result.chunks_created == 0
+        assert len(ocr.ocr_calls) == 0
+
+
+@pytest.mark.unit
+class TestImageRouterVLMAndOCR:
+    """Test ImageRouter in vlm_and_ocr mode (both backends provided)."""
+
+    def test_dual_mode_produces_two_chunks(self, sample_image_path):
+        vs = _MockVectorStore()
+        vlm = _MockVLM(caption_text="VLM description of the image.")
+        ocr = _MockOCR(ocr_text="OCR text from the image.")
+        config = ImageProcessorConfig(enable_ocr=True)
+        router = ImageRouter(
+            vlm=vlm,
+            vector_store=vs,
+            embedder=_MockEmbedder(),
+            ocr=ocr,
+            config=config,
+        )
+
+        result = router.process(sample_image_path)
+
+        assert result.chunks_created == 2
+        assert result.caption_result is not None
+        assert result.ocr_result is not None
+        assert result.caption_result.caption == "VLM description of the image."
+        assert result.ocr_result.text == "OCR text from the image."
+        assert len(vs.upserted) == 2
+        source_types = {c.metadata.source_type for c in vs.upserted}
+        assert source_types == {"image_caption", "image_ocr_text"}
+
+    def test_ocr_failure_vlm_success_produces_one_chunk(self, sample_image_path):
+        """OCR fails but VLM succeeds -> 1 chunk + OCR error."""
+        vs = _MockVectorStore()
+        vlm = _MockVLM(caption_text="VLM caption works.")
+        ocr = _MockOCR(raise_on_ocr=ConnectionError("OCR down"))
+        config = ImageProcessorConfig(enable_ocr=True)
+        router = ImageRouter(
+            vlm=vlm,
+            vector_store=vs,
+            embedder=_MockEmbedder(),
+            ocr=ocr,
+            config=config,
+        )
+
+        result = router.process(sample_image_path)
+
+        assert result.chunks_created == 1
+        assert result.caption_result is not None
+        assert result.ocr_result is None
+        assert ImageErrorCode.E_IMAGE_OCR_UNAVAILABLE.value in result.errors
+        assert len(vs.upserted) == 1
+        assert vs.upserted[0].metadata.source_type == "image_caption"
+
+    def test_vlm_failure_ocr_success_produces_one_chunk(self, sample_image_path):
+        """VLM fails but OCR succeeds -> 1 chunk + VLM error."""
+        vs = _MockVectorStore()
+        vlm = _MockVLM(available=False)
+        ocr = _MockOCR(ocr_text="OCR text works.")
+        config = ImageProcessorConfig(enable_ocr=True)
+        router = ImageRouter(
+            vlm=vlm,
+            vector_store=vs,
+            embedder=_MockEmbedder(),
+            ocr=ocr,
+            config=config,
+        )
+
+        result = router.process(sample_image_path)
+
+        assert result.chunks_created == 1
+        assert result.caption_result is None
+        assert result.ocr_result is not None
+        assert ImageErrorCode.E_IMAGE_VLM_UNAVAILABLE.value in result.errors
+        assert len(vs.upserted) == 1
+        assert vs.upserted[0].metadata.source_type == "image_ocr_text"
+
+    def test_both_fail_produces_zero_chunks(self, sample_image_path):
+        """Both VLM and OCR fail -> 0 chunks + both errors."""
+        vs = _MockVectorStore()
+        vlm = _MockVLM(available=False)
+        ocr = _MockOCR(raise_on_ocr=ConnectionError("OCR down"))
+        config = ImageProcessorConfig(enable_ocr=True)
+        router = ImageRouter(
+            vlm=vlm,
+            vector_store=vs,
+            embedder=_MockEmbedder(),
+            ocr=ocr,
+            config=config,
+        )
+
+        result = router.process(sample_image_path)
+
+        assert result.chunks_created == 0
+        assert ImageErrorCode.E_IMAGE_VLM_UNAVAILABLE.value in result.errors
+        assert ImageErrorCode.E_IMAGE_OCR_UNAVAILABLE.value in result.errors
+
+
+@pytest.mark.unit
+class TestImageRouterConstructorValidation:
+    """Test ImageRouter constructor validation."""
+
+    def test_neither_backend_raises_value_error(self):
+        with pytest.raises(ValueError, match="At least one of"):
+            ImageRouter(
+                vlm=None,
+                vector_store=_MockVectorStore(),
+                embedder=_MockEmbedder(),
+                ocr=None,
+            )
+
+    def test_vlm_only_construction_succeeds(self):
+        router = ImageRouter(_MockVLM(), _MockVectorStore(), _MockEmbedder())
+        assert router._vlm is not None
+        assert router._ocr is None
+
+    def test_ocr_only_construction_succeeds(self):
+        router = ImageRouter(
+            vlm=None,
+            vector_store=_MockVectorStore(),
+            embedder=_MockEmbedder(),
+            ocr=_MockOCR(),
+        )
+        assert router._vlm is None
+        assert router._ocr is not None

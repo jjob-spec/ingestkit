@@ -9,6 +9,7 @@ from PIL import Image
 
 from ingestkit_image.config import ImageProcessorConfig
 from ingestkit_image.models import ImageMetadata, ImageType
+from ingestkit_image.protocols import OCRResult
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,50 @@ class MockEmbedder:
         return self._dim
 
 
+class MockOCRBackend:
+    """Mock OCR backend satisfying ImageOCRBackend protocol."""
+
+    def __init__(
+        self,
+        ocr_text: str = "Sample OCR extracted text from image.",
+        confidence: float = 0.92,
+        engine: str = "tesseract",
+        language: str = "eng",
+        raise_on_ocr: Exception | None = None,
+    ) -> None:
+        self._ocr_text = ocr_text
+        self._confidence = confidence
+        self._engine = engine
+        self._language = language
+        self._raise_on_ocr = raise_on_ocr
+        self.ocr_calls: list[dict] = []
+
+    def ocr_image(
+        self,
+        image_bytes: bytes,
+        language: str = "en",
+        config: str | None = None,
+        timeout: float | None = None,
+    ) -> OCRResult:
+        self.ocr_calls.append({
+            "image_bytes_len": len(image_bytes),
+            "language": language,
+            "config": config,
+            "timeout": timeout,
+        })
+        if self._raise_on_ocr is not None:
+            raise self._raise_on_ocr
+        return OCRResult(
+            text=self._ocr_text,
+            confidence=self._confidence,
+            engine=self._engine,
+            language=self._language,
+        )
+
+    def engine_name(self) -> str:
+        return self._engine
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -105,6 +150,12 @@ def image_config() -> ImageProcessorConfig:
 def mock_vlm_backend() -> MockVLMBackend:
     """Return a mock VLM backend with default caption."""
     return MockVLMBackend()
+
+
+@pytest.fixture
+def mock_ocr_backend() -> MockOCRBackend:
+    """Return a mock OCR backend with default text."""
+    return MockOCRBackend()
 
 
 @pytest.fixture
