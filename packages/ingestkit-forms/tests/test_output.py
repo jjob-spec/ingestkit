@@ -30,6 +30,7 @@ from ingestkit_forms.output.db_writer import (
     FIELD_TYPE_TO_SQL,
     METADATA_COLUMNS,
     FormDBWriter,
+    _safe_column_map,
     build_row_dict,
     generate_table_schema,
     get_table_name,
@@ -54,6 +55,93 @@ from tests.conftest import (
 # ===========================================================================
 # DB Writer Tests
 # ===========================================================================
+
+
+class TestSafeColumnMap:
+    """Tests for the PostgreSQL 63-char identifier truncation helper."""
+
+    @pytest.mark.unit
+    def test_short_names_unchanged(self):
+        """Names at or below 63 chars are returned unchanged."""
+        name = "employee_name"
+        result = _safe_column_map([name])
+        assert result[name] == name
+
+    @pytest.mark.unit
+    def test_exactly_63_chars_unchanged(self):
+        """A name that is exactly 63 characters is not truncated."""
+        name = "a" * 63
+        result = _safe_column_map([name])
+        assert result[name] == name
+        assert len(result[name]) == 63
+
+    @pytest.mark.unit
+    def test_long_name_truncated_to_63(self):
+        """A name longer than 63 chars is truncated to exactly 63."""
+        name = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusions[0].Line1"
+        result = _safe_column_map([name])
+        safe = result[name]
+        assert len(safe) == 63
+        assert safe == name[:63]
+
+    @pytest.mark.unit
+    def test_collision_gets_suffix(self):
+        """Two names sharing the same 63-char prefix: second gets _2 suffix."""
+        # Both names are > 63 chars and share their first 63 characters
+        name_a = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusions[0].Line1"
+        name_b = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusions[0].Line2"
+        assert name_a[:63] == name_b[:63], "Test setup: names must share 63-char prefix"
+
+        result = _safe_column_map([name_a, name_b])
+
+        safe_a = result[name_a]
+        safe_b = result[name_b]
+
+        # First name gets truncated to 63 chars (the shared prefix)
+        assert safe_a == name_a[:63]
+        assert len(safe_a) == 63
+
+        # Second name gets a _2 suffix, still ≤ 63 chars total
+        assert safe_b != safe_a
+        assert safe_b.endswith("_2")
+        assert len(safe_b) == 63
+
+    @pytest.mark.unit
+    def test_multiple_collisions(self):
+        """Three names sharing the same 63-char prefix get _2, _3 suffixes."""
+        # All three names are > 63 chars and share their first 63 characters
+        name_a = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusions.Line1"
+        name_b = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusions.Line2"
+        name_c = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusions.Line3"
+        assert name_a[:63] == name_b[:63] == name_c[:63], "Test setup: names must share 63-char prefix"
+
+        result = _safe_column_map([name_a, name_b, name_c])
+
+        safe_a = result[name_a]
+        safe_b = result[name_b]
+        safe_c = result[name_c]
+
+        assert safe_a == name_a[:63]
+        assert safe_b.endswith("_2")
+        assert safe_c.endswith("_3")
+        # All must be unique
+        assert len({safe_a, safe_b, safe_c}) == 3
+        # All must be ≤ 63 chars
+        assert all(len(s) <= 63 for s in [safe_a, safe_b, safe_c])
+
+    @pytest.mark.unit
+    def test_empty_list(self):
+        """Empty input returns empty mapping."""
+        assert _safe_column_map([]) == {}
+
+    @pytest.mark.unit
+    def test_mixed_short_and_long(self):
+        """Short names pass through; only long names are truncated."""
+        short = "emp_name"
+        long_name = "x" * 70
+        result = _safe_column_map([short, long_name])
+        assert result[short] == short
+        assert len(result[long_name]) == 63
 
 
 class TestSlugifyTemplateName:
@@ -103,6 +191,32 @@ class TestGenerateTableSchema:
         assert schema["_form_id"] == "TEXT PRIMARY KEY"
         assert schema["emp_name"] == "TEXT"
         assert schema["is_active"] == "INTEGER"
+
+    @pytest.mark.unit
+    def test_long_colliding_field_names_produce_unique_columns(self):
+        """Two field names sharing the same 63-char prefix yield unique column names.
+
+        This is the regression test for issue #460: PostgreSQL rejects CREATE TABLE
+        when two column names truncate to the same 63-character identifier.
+        """
+        prefix = "F[0].Page1[0].DescriptionOfOperationsLocationsVehiclesExclusio"  # 63 chars
+        name_a = prefix + "ns[0].Line1"
+        name_b = prefix + "ns[0].Line2"
+
+        fields = [
+            make_field_mapping(field_name=name_a, field_type=FieldType.TEXT),
+            make_field_mapping(field_name=name_b, field_type=FieldType.TEXT, y=0.2),
+        ]
+        template = make_template(fields=fields)
+        schema = generate_table_schema(template)
+
+        # 10 metadata + 2 field columns (must be unique, no collision)
+        assert len(schema) == 12
+        # Column names must be unique (no overwrite)
+        field_cols = [k for k in schema if not k.startswith("_")]
+        assert len(field_cols) == 2
+        # All column names must be ≤ 63 chars
+        assert all(len(col) <= 63 for col in field_cols)
 
 
 class TestBuildRowDict:

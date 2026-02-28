@@ -27,6 +27,8 @@ from ingestkit_forms.protocols import FormDBBackend
 
 logger = logging.getLogger("ingestkit_forms")
 
+_PG_MAX_IDENT = 63  # PostgreSQL identifier length limit
+
 
 def _quote_ident(name: str) -> str:
     """Double-quote a SQL identifier, escaping internal double-quotes.
@@ -38,6 +40,34 @@ def _quote_ident(name: str) -> str:
     """
     return '"' + name.replace('"', '""') + '"'
 
+
+def _safe_column_map(field_names: list[str]) -> dict[str, str]:
+    """Map original field names to PostgreSQL-safe column names (≤63 chars).
+
+    Truncates long names and appends a numeric suffix (_2, _3, ...) when
+    truncation causes a collision. Metadata column names (_form_id etc.)
+    are all short and not affected.
+    """
+    mapping: dict[str, str] = {}
+    seen: dict[str, int] = {}
+
+    for name in field_names:
+        if len(name) <= _PG_MAX_IDENT:
+            safe = name
+        else:
+            safe = name[:_PG_MAX_IDENT]
+
+        if safe not in seen:
+            seen[safe] = 1
+            mapping[name] = safe
+        else:
+            count = seen[safe] + 1
+            seen[safe] = count
+            suffix = f"_{count}"
+            base = name[: _PG_MAX_IDENT - len(suffix)]
+            mapping[name] = base + suffix
+
+    return mapping
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +150,17 @@ def generate_table_schema(template: FormTemplate) -> dict[str, str]:
 
     Returns a dict of ``{column_name: sql_type}`` combining the 10
     metadata columns and one column per template field.
+
+    Field names are truncated to the PostgreSQL 63-character identifier
+    limit. When truncation causes a collision, a numeric suffix (_2, _3,
+    ...) is appended to disambiguate.
     """
     schema = dict(METADATA_COLUMNS)
+    field_names = [field.field_name for field in template.fields]
+    col_map = _safe_column_map(field_names)
     for field in template.fields:
         sql_type = FIELD_TYPE_TO_SQL.get(field.field_type, "TEXT")
-        schema[field.field_name] = sql_type
+        schema[col_map[field.field_name]] = sql_type
     return schema
 
 
@@ -153,8 +189,10 @@ def build_row_dict(
         "_extraction_method": extraction.extraction_method,
     }
 
+    field_names = [field.field_name for field in extraction.fields]
+    col_map = _safe_column_map(field_names)
     for field in extraction.fields:
-        row[field.field_name] = _coerce_field_value(field)
+        row[col_map[field.field_name]] = _coerce_field_value(field)
 
     return row
 
@@ -233,14 +271,15 @@ class FormDBWriter:
             added: list[str] = []
 
             for field in new_template.fields:
-                if field.field_name not in existing_columns:
+                safe_name = field.field_name[:_PG_MAX_IDENT]
+                if safe_name not in existing_columns:
                     sql_type = FIELD_TYPE_TO_SQL.get(field.field_type, "TEXT")
                     alter_sql = (
                         f"ALTER TABLE {_quote_ident(table_name)} "
-                        f"ADD COLUMN {_quote_ident(field.field_name)} {sql_type}"
+                        f"ADD COLUMN {_quote_ident(safe_name)} {sql_type}"
                     )
                     self._db.execute_sql(alter_sql)
-                    added.append(field.field_name)
+                    added.append(safe_name)
 
             if added:
                 logger.warning(
