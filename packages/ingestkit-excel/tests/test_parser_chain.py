@@ -456,6 +456,29 @@ class TestHeaderDetection:
         assert sp.header_row_detected is True
         assert sp.header_values == ["Col1", "Col2", "Col3"]
 
+    def test_header_detection_two_column_sheet(
+        self, tmp_path: Path, chain: ParserChain
+    ) -> None:
+        """A 2-column sheet (P&L-style: Item | Value) should detect a header."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "PL"
+        # Title row (skipped — only 1 non-empty string cell)
+        ws.append(["PL_Statements_2024"])
+        ws.append([])  # blank row
+        # Header row — exactly 2 non-empty string cells
+        ws.append(["Item", "Value"])
+        ws.append(["Revenue", 1_000_000])
+        ws.append(["COGS", 600_000])
+        file_path = str(tmp_path / "pl_2col.xlsx")
+        wb.save(file_path)
+        wb.close()
+
+        profile, _ = chain.parse(file_path)
+        sp = profile.sheets[0]
+        assert sp.header_row_detected is True
+        assert sp.header_values == ["Item", "Value"]
+
     def test_no_header_when_all_numeric(
         self, tmp_path: Path, chain: ParserChain
     ) -> None:

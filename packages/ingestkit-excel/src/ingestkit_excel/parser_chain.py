@@ -889,7 +889,7 @@ class ParserChain:
         if no header was found.
         """
         _MAX_HEADER_SCAN_ROWS = 20
-        _MIN_HEADER_COLS = 3
+        _MIN_HEADER_COLS = 2
 
         if not rows_data:
             return False, [], None
